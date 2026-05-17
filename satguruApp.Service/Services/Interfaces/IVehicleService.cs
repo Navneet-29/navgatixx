@@ -26,8 +26,9 @@ namespace satguruApp.Service.Services.Interfaces
         Task<List<BookingViewModel>> GetTransporterRideRequestsAsync(string transporterUserId);
         Task<List<BookingViewModel>> GetDriverRidesAsync(string driverUserId);
         Task<LiveVehicleTrackingViewModel> SaveLiveVehicleTrackings(LiveVehicleTrackingViewModel liveVehicle);
-        Task<List<LiveVehicleTrackingViewModel>> GetLiveVehicleTrackings(Guid vehicleId, string deviceId);
+        Task<List<LiveVehicleTrackingViewModel>> GetLiveVehicleTrackings(Guid vehicleId, long? bookingId);
         Task<RideTrackingSnapshotViewModel> GetTrackingSnapshotAsync(long bookingId);
         Task<List<VehicleViewModel>> GetVehicleList(VehicleViewModel vehicleView);
+        Task<List<LiveVehicleTrackingHistoryViewModel>> GetRouteVehicleTrackings(Guid vehicleId, long? bookingId);
     }
 }

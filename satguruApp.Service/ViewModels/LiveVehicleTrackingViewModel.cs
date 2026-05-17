@@ -27,6 +27,8 @@ namespace satguruApp.Service.ViewModels
         public string UserId { get; set; }
         public double? DistanceRemainingKm { get; set; }
         public int? EstimatedArrivalMinutes { get; set; }
+        public decimal? Speed { get; set; }
+        public decimal? Heading { get; set; }
 
     }
 }

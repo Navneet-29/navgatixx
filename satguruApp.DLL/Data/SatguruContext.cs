@@ -12,7 +12,7 @@ public partial class SatguruContext : DbContext
     {
     }
 
-    public virtual DbSet<AccountType> AccountTypes { get; set; }
+        public virtual DbSet<AccountType> AccountTypes { get; set; }
 
     public virtual DbSet<Address> Addresses { get; set; }
 
@@ -109,6 +109,7 @@ public partial class SatguruContext : DbContext
     public virtual DbSet<JobSkill> JobSkills { get; set; }
 
     public virtual DbSet<LiveVehicleTracking> LiveVehicleTrackings { get; set; }
+    public virtual DbSet<LiveVehicleTrackingHistory> LiveVehicleTrackingHistories { get; set; }
 
     public virtual DbSet<NavLink> NavLinks { get; set; }
 
@@ -1166,6 +1167,31 @@ public partial class SatguruContext : DbContext
             entity.HasOne(d => d.Vehicle).WithMany(p => p.LiveVehicleTrackings)
                 .HasForeignKey(d => d.VehicleId)
                 .HasConstraintName("FK__LiveVehic__Vehic__46B27FE2");
+        });
+        modelBuilder.Entity<LiveVehicleTrackingHistory>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("PK__LiveVehiHistory__3214EC0753434023");
+
+            entity.ToTable("LiveVehicleTrackingHistory");
+
+            entity.Property(e => e.DeviceId)
+                .HasMaxLength(550)
+                .IsUnicode(false);
+            entity.Property(e => e.Heading).HasColumnType("decimal(18, 2)");
+            entity.Property(e => e.IsDeleted)
+                .HasDefaultValue(false)
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__LiveVehicHistory__IsDel__5D95E53A");
+            entity.Property(e => e.LastLatitude).HasColumnType("decimal(18, 6)");
+            entity.Property(e => e.LastLongitude).HasColumnType("decimal(18, 6)");
+            entity.Property(e => e.LastUpdated).HasColumnType("datetime");
+            entity.Property(e => e.RecordedAt)
+                .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF_LiveVehicleTrackingHistory_RecordedAt")
+                .HasColumnType("datetime");
+            entity.Property(e => e.Speed).HasColumnType("decimal(18, 2)");
+            entity.Property(e => e.UserId)
+                .HasMaxLength(450)
+                .IsUnicode(false);
         });
 
         modelBuilder.Entity<NavLink>(entity =>

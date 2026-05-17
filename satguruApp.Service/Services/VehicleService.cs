@@ -472,7 +472,7 @@ namespace satguruApp.Service.Services
             vehicle.UpdatedDatetime = DateTime.UtcNow;
             _db.Vehicles.Update(vehicle);
 
-            LiveVehicleTracking existingTracking = await _db.LiveVehicleTrackings.Where(x => x.VehicleId == liveVehicle.VehicleId.Value && x.DeviceId == liveVehicle.DeviceId && x.IsDeleted == false).OrderByDescending(x => x.LastUpdated).FirstOrDefaultAsync();
+            LiveVehicleTracking existingTracking = await _db.LiveVehicleTrackings.Where(x => x.VehicleId == liveVehicle.VehicleId.Value && (x.BookingId == liveVehicle.BookingId || liveVehicle.BookingId == null) && x.IsDeleted == false).OrderByDescending(x => x.LastUpdated).FirstOrDefaultAsync();
 
             if (existingTracking == null)
             {
@@ -481,6 +481,7 @@ namespace satguruApp.Service.Services
                     VehicleId = vehicle.Id,
                     DeviceId = liveVehicle.DeviceId,
                     UserId = liveVehicle.UserId,
+                    BookingId = liveVehicle.BookingId,
                     IsDeleted = false,
                 };
                 _db.LiveVehicleTrackings.Add(existingTracking);
@@ -488,6 +489,8 @@ namespace satguruApp.Service.Services
 
             existingTracking.LastLatitude = liveVehicle.Latitude;
             existingTracking.LastLongitude = liveVehicle.Longitude;
+            existingTracking.Speed = liveVehicle.Speed;
+            existingTracking.Heading = liveVehicle.Heading;
             existingTracking.LastUpdated = DateTime.UtcNow;
 
             Booking? booking = null;
@@ -512,6 +515,22 @@ namespace satguruApp.Service.Services
 
             await _db.SaveChangesAsync();
 
+            var existingRouteTracking = new LiveVehicleTrackingHistory
+            {
+                VehicleId = vehicle.Id,
+                LiveVehicleTrackingId = existingTracking.Id,
+                DeviceId = liveVehicle.DeviceId,
+                UserId = liveVehicle.UserId,
+                BookingId = liveVehicle.BookingId,
+                IsDeleted = false,
+                LastLatitude = liveVehicle.Latitude,
+                LastLongitude = liveVehicle.Longitude,
+                Speed = liveVehicle.Speed,
+                Heading = liveVehicle.Heading,
+                LastUpdated = DateTime.UtcNow,
+            };
+            _db.LiveVehicleTrackingHistories.Add(existingRouteTracking);
+
             liveVehicle.Id = existingTracking.Id;
             liveVehicle.LastUpdated = existingTracking.LastUpdated;
             liveVehicle.DistanceRemainingKm = null;
@@ -533,17 +552,18 @@ namespace satguruApp.Service.Services
                     await _trackingNotificationService.NotifyFleetLocationUpdatedAsync(transporterObj.UserId, liveVehicle);
                 }
             }
+            await _db.SaveChangesAsync();
 
             return liveVehicle;
         }
-        public async Task<List<LiveVehicleTrackingViewModel>> GetLiveVehicleTrackings(Guid vehicleId, string deviceId)
+        public async Task<List<LiveVehicleTrackingViewModel>> GetLiveVehicleTrackings(Guid vehicleId, long bookingId)
         {
             var query = _db.LiveVehicleTrackings
                 .Where(x => x.VehicleId == vehicleId && x.IsDeleted != true);
 
-            if (!string.IsNullOrWhiteSpace(deviceId))
+            if (bookingId > 0)
             {
-                query = query.Where(x => x.DeviceId == deviceId);
+                query = query.Where(x => x.BookingId == bookingId);
             }
 
             var liveVehicleTrack = await query.Select(x => new LiveVehicleTrackingViewModel
@@ -555,6 +575,9 @@ namespace satguruApp.Service.Services
                 Latitude = x.LastLatitude,
                 Longitude = x.LastLongitude,
                 LastUpdated = x.LastUpdated,
+                BookingId = x.BookingId,
+                Speed = x.Speed,
+                Heading = x.Heading,
             }).ToListAsync();
             if (liveVehicleTrack.Any())
             {
@@ -563,6 +586,39 @@ namespace satguruApp.Service.Services
             else
             {
                 return new List<LiveVehicleTrackingViewModel> { new LiveVehicleTrackingViewModel { Message = "Live tracking data not found for the specified vehicle." } };
+            }
+        }
+        public async Task<List<LiveVehicleTrackingHistoryViewModel>> GetRouteVehicleTrackings(Guid vehicleId, long? bookingId)
+        {
+            var query = _db.LiveVehicleTrackingHistories
+                .Where(x => x.VehicleId == vehicleId && x.IsDeleted != true);
+
+            if (bookingId > 0)
+            {
+                query = query.Where(x => x.BookingId == bookingId);
+            }
+
+            var liveVehicleTrack = await query.Select(x => new LiveVehicleTrackingHistoryViewModel
+            {
+                Id = x.Id,
+                LiveVehicleTrackingId = x.LiveVehicleTrackingId,
+                VehicleId = x.VehicleId,
+                DeviceId = x.DeviceId,
+                UserId = x.UserId,
+                Latitude = x.LastLatitude,
+                Longitude = x.LastLongitude,
+                LastUpdated = x.LastUpdated,
+                BookingId = x.BookingId,
+                Speed = x.Speed,
+                Heading = x.Heading,
+            }).ToListAsync();
+            if (liveVehicleTrack.Any())
+            {
+                return liveVehicleTrack;
+            }
+            else
+            {
+                return new List<LiveVehicleTrackingHistoryViewModel> { new LiveVehicleTrackingHistoryViewModel { Message = "Live tracking data not found for the specified vehicle." } };
             }
         }
 

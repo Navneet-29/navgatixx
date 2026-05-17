@@ -369,3 +369,4 @@ FodyWeavers.xsd
 !/Firebase/.gitkeep
 /appsettings.json
 /appsettings.json
+/wwwroot/index.html
