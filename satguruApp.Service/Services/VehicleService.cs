@@ -556,12 +556,12 @@ namespace satguruApp.Service.Services
 
             return liveVehicle;
         }
-        public async Task<List<LiveVehicleTrackingViewModel>> GetLiveVehicleTrackings(Guid vehicleId, long bookingId)
+        public async Task<List<LiveVehicleTrackingViewModel>> GetLiveVehicleTrackings(Guid vehicleId, long? bookingId)
         {
             var query = _db.LiveVehicleTrackings
                 .Where(x => x.VehicleId == vehicleId && x.IsDeleted != true);
 
-            if (bookingId > 0)
+            if (bookingId.HasValue && bookingId.Value > 0)
             {
                 query = query.Where(x => x.BookingId == bookingId);
             }
@@ -593,7 +593,7 @@ namespace satguruApp.Service.Services
             var query = _db.LiveVehicleTrackingHistories
                 .Where(x => x.VehicleId == vehicleId && x.IsDeleted != true);
 
-            if (bookingId > 0)
+            if (bookingId.HasValue && bookingId.Value > 0)
             {
                 query = query.Where(x => x.BookingId == bookingId);
             }

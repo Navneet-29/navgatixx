@@ -124,13 +124,13 @@ namespace navgatix.Controllers
         }
         [HttpPost("getLiveVehicleTracking")]
         [AllowAnonymous]
-        public async Task<IActionResult> GetLiveVehicleTracking([FromQuery] Guid vehicleId, [FromQuery] long bookingId)
+        public async Task<IActionResult> GetLiveVehicleTracking([FromQuery] Guid vehicleId, [FromQuery] long? bookingId)
         {
             return Ok(await _vehicleService.GetLiveVehicleTrackings(vehicleId, bookingId));
         }
         [HttpPost("getRouteVehicleTracking")]
         [AllowAnonymous]
-        public async Task<IActionResult> GetRouteVehicleTracking([FromQuery] Guid vehicleId, [FromQuery] long bookingId)
+        public async Task<IActionResult> GetRouteVehicleTracking([FromQuery] Guid vehicleId, [FromQuery] long? bookingId)
         {
             return Ok(await _vehicleService.GetRouteVehicleTrackings(vehicleId, bookingId));
         }
