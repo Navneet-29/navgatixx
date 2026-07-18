@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Anchor, ArrowRightLeft, CheckCircle, ClipboardList, Database, History, Info, Layout, MapPin, MessageCircle, Navigation, Package, Search, Truck, User, X } from 'lucide-react';
+import { Anchor, ArrowRightLeft, CheckCircle, ClipboardList, Database, History, Info, Layout, MapPin, MessageCircle, Navigation, Package, Search, Truck, User, X, LayoutDashboard, Settings, LogOut, Menu, ChevronDown, CreditCard, Bell, Key, Home, Star } from 'lucide-react';
 import apiClient from '../../api/apiClient';
 import { fetchVehicleCommonTypes } from '../../services/vehicleCommonTypes';
 import { normalizeCommonTypes, type NormalizedCommonType } from '../../lib/commonTypes';
@@ -36,16 +36,17 @@ interface Shipment {
     matchedCount: number;
     status: RideStatus;
     date: string;
+    driverName?: string;
+    driverPhone?: string;
+    vehicleNumber?: string;
+    vehicleName?: string;
+    pickupLat?: number;
+    pickupLng?: number;
+    dropLat?: number;
+    dropLng?: number;
+    estimatedFare?: number;
 }
 
-const STATUS_OPTIONS: RideStatus[] = [
-    'request_for_ride',
-    'driver_assigned',
-    'driver_arriving',
-    'ride_started',
-    'ride_completed',
-    'cancelled',
-];
 
 const DEFAULT_PRODUCT_TYPES = [
     'Electronics',
@@ -68,6 +69,7 @@ const FALLBACK_PRODUCT_TYPES: NormalizedCommonType[] = DEFAULT_PRODUCT_TYPES.map
 const CustomerDashboard = () => {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
+    const [settingsExpanded, setSettingsExpanded] = useState(false);
     const [user, setUser] = useState<any>(null);
     const [activeTab, setActiveTab] = useState<'shipments' | 'new'>('shipments');
     const [shipments, setShipments] = useState<Shipment[]>([]);
@@ -91,14 +93,40 @@ const CustomerDashboard = () => {
         vehicle: '', 
         ctBodyType: '',
         ctTyreType: '',
+        pickupBuildingNo: '',
+        pickupHouseNo: '',
+        dropBuildingNo: '',
+        dropHouseNo: '',
     });
     const [submitStatus, setSubmitStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
     const [errorMessage, setErrorMessage] = useState('');
-    const [statusDrafts, setStatusDrafts] = useState<Record<number, RideStatus>>({});
-    const [paymentDrafts, setPaymentDrafts] = useState<Record<number, string>>({});
     const [disputeDrafts, setDisputeDrafts] = useState<Record<number, string>>({});
-    const [trackingBooking, setTrackingBooking] = useState<any>(null);
     const [chatBookingId, setChatBookingId] = useState<number | null>(null);
+    const [trackingBooking, setTrackingBooking] = useState<any>(null);
+    
+    // Realtime Driver Search States
+    const [searchingBookingId, setSearchingBookingId] = useState<number | null>(null);
+    const [searchTimeLeft, setSearchTimeLeft] = useState(45);
+    const [searchPhase, setSearchPhase] = useState(0);
+    const [searchTimeoutError, setSearchTimeoutError] = useState(false);
+    const [matchedDriverDetails, setMatchedDriverDetails] = useState<any>(null);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
+    
+    // Rating States
+    const [selectedRatingBooking, setSelectedRatingBooking] = useState<any>(null);
+    const [isRatingModalOpen, setIsRatingModalOpen] = useState(false);
+    const [ratingScore, setRatingScore] = useState(5);
+    const [ratingComment, setRatingComment] = useState('');
+    const [submittingRating, setSubmittingRating] = useState(false);
+
+    const lastSeenNotifIdsRef = useRef<Set<string>>(new Set());
+    const [chatToast, setChatToast] = useState<{
+        id: string;
+        bookingId?: number;
+        roomName?: string;
+        senderName: string;
+        messageText: string;
+    } | null>(null);
 
     useEffect(() => {
         const userStr = localStorage.getItem('user');
@@ -108,6 +136,62 @@ const CustomerDashboard = () => {
             navigate('/login');
         }
     }, [navigate]);
+
+    // Poll chat notifications
+    useEffect(() => {
+        const customerId = user?.userId || user?.id || user?.UserId || '';
+        if (!customerId) return;
+
+        const checkChatNotifications = async () => {
+            try {
+                const res = await apiClient.get(`/Transport/getRelationshipNotifications?userId=${customerId}`);
+                const notifications = Array.isArray(res.data) ? res.data : [];
+
+                notifications.forEach((n: any) => {
+                    if (!lastSeenNotifIdsRef.current.has(n.id) && lastSeenNotifIdsRef.current.size > 0) {
+                        if (n.message && (n.message.startsWith('CHAT_MESSAGE|') || n.message.startsWith('CHAT_MESSAGE_DIRECT|'))) {
+                            try {
+                                const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                                audio.volume = 0.6;
+                                audio.play().catch(() => {});
+                            } catch (e) {}
+
+                            const parts = n.message.split('|');
+                            const senderAndText = parts[2] || '';
+                            const msgParts = senderAndText.split(':');
+                            const senderName = msgParts[0] || 'User';
+                            const messageText = msgParts.slice(1).join(':') || '';
+
+                            if (n.message.startsWith('CHAT_MESSAGE|')) {
+                                const bookingId = Number(parts[1]);
+                                setChatToast({
+                                    id: n.id,
+                                    bookingId,
+                                    senderName,
+                                    messageText
+                                });
+                            } else {
+                                const roomName = parts[1];
+                                setChatToast({
+                                    id: n.id,
+                                    roomName,
+                                    senderName,
+                                    messageText
+                                });
+                            }
+                        }
+                    }
+                });
+
+                lastSeenNotifIdsRef.current = new Set(notifications.map((n: any) => n.id));
+            } catch (err) {
+                console.error("Failed to load customer chat notifications:", err);
+            }
+        };
+
+        const intervalId = setInterval(checkChatNotifications, 5000);
+        return () => clearInterval(intervalId);
+    }, [user]);
 
     useEffect(() => {
         const loadInitialData = async () => {
@@ -148,15 +232,20 @@ const CustomerDashboard = () => {
                         matchedCount: 0,
                         status: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
                         date: item.createdAt ?? item.CreatedAt ?? '',
+                        driverName: item.driverName ?? item.DriverName ?? '',
+                        driverPhone: item.driverPhone ?? item.DriverPhone ?? '',
+                        driverUserId: item.driverUserId ?? item.DriverUserId ?? '',
+                        vehicleNumber: item.vehicleNumber ?? item.VehicleNumber ?? '',
+                        vehicleName: item.vehicleName ?? item.VehicleName ?? '',
+                        pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
+                        pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
+                        dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
+                        dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
+                        estimatedFare: Number(item.estimatedFare ?? item.EstimatedFare ?? 0),
                     }));
 
                 setShipments(normalized);
-                setStatusDrafts(
-                    normalized.reduce<Record<number, RideStatus>>((acc, shipment) => {
-                        acc[shipment.id] = shipment.status;
-                        return acc;
-                    }, {})
-                );
+
             } catch (err) {
                 console.error(err);
             }
@@ -169,6 +258,98 @@ const CustomerDashboard = () => {
         const tab = searchParams.get('tab');
         setActiveTab(tab === 'new' ? 'new' : 'shipments');
     }, [searchParams]);
+
+    const handleCancelSearch = async (bookingId: number) => {
+        if (bookingId <= 0) {
+            setSearchingBookingId(null);
+            openShipmentList();
+            return;
+        }
+        try {
+            await apiClient.patch(`/Vehicle/${bookingId}/rideStatus`, null, { params: { status: 'cancelled' } });
+            setSearchingBookingId(null);
+            setShipments((prev) => prev.map((s) => s.id === bookingId ? { ...s, status: 'cancelled' } : s));
+            alert('Search cancelled successfully.');
+            openShipmentList();
+        } catch (err) {
+            console.error('Failed to cancel search', err);
+            setSearchingBookingId(null);
+            openShipmentList();
+        }
+    };
+
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        navigate('/login');
+    };
+
+    useEffect(() => {
+        if (!searchingBookingId) return;
+
+        // Reset states
+        setSearchTimeLeft(300);
+        setSearchPhase(0);
+        setSearchTimeoutError(false);
+
+        // 1s countdown timer
+        const timer = setInterval(() => {
+            setSearchTimeLeft((prev) => {
+                if (prev <= 1) {
+                    clearInterval(timer);
+                    setSearchTimeoutError(true);
+                    return 0;
+                }
+                const next = prev - 1;
+                
+                // If it is a simulated search failure (-100), run for exactly 15 seconds then show timeout error
+                if (searchingBookingId === -100 && next === 285) {
+                    clearInterval(timer);
+                    setSearchTimeoutError(true);
+                    return 285;
+                }
+
+                // Transition phases
+                if (next > 225) setSearchPhase(0);
+                else if (next > 150) setSearchPhase(1);
+                else if (next > 75) setSearchPhase(2);
+                else setSearchPhase(3);
+                return next;
+            });
+        }, 1000);
+
+        // 3s status polling timer (only poll if bookingId > 0)
+        let poll: any = null;
+        if (searchingBookingId > 0) {
+            poll = setInterval(async () => {
+                try {
+                    const res = await apiClient.get(`/Vehicle/ride/${searchingBookingId}`);
+                    const ride = res.data || {};
+                    const rideStatus = ride.rideStatus ?? ride.RideStatus ?? 'request_for_ride';
+                    
+                    if (rideStatus === 'driver_assigned' || rideStatus === 'driver_arriving' || rideStatus === 'ride_started') {
+                        clearInterval(timer);
+                        if (poll) clearInterval(poll);
+                        
+                        // Match succeeded! Update local shipments list
+                        setShipments((prev) => prev.map((s) => s.id === searchingBookingId ? { 
+                            ...s, 
+                            status: rideStatus, 
+                            vehicle: ride.vehicleNumber || s.vehicle 
+                        } : s));
+                        setMatchedDriverDetails(ride);
+                    }
+                } catch (err) {
+                    console.error('Error polling ride status', err);
+                }
+            }, 3000);
+        }
+
+        return () => {
+            clearInterval(timer);
+            if (poll) clearInterval(poll);
+        };
+    }, [searchingBookingId]);
 
     const openNewShipment = () => {
         setActiveTab('new');
@@ -195,18 +376,25 @@ const CustomerDashboard = () => {
     };
 
     const handleCreateShipment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage('');
+        e.preventDefault();
+        setErrorMessage('');
 
-    if (!formData.vehicle) {
-        setErrorMessage('Vehicle type selection is mandatory for creating a shipment.');
-        setSubmitStatus('error');
-        return;
-    }
+        if (!formData.vehicle) {
+            setErrorMessage('Vehicle type selection is mandatory for creating a shipment.');
+            setSubmitStatus('error');
+            return;
+        }
 
-    setSubmitStatus('loading');
+        setSubmitStatus('loading');
 
-            try {
+        // Activate search UI instantly in searching mode (-1) to feel super responsive!
+        setSearchingBookingId(-1);
+        setSearchTimeLeft(45);
+        setSearchPhase(0);
+        setSearchTimeoutError(false);
+        setMatchedDriverDetails(null);
+
+        try {
             // Use custom product type if "Other" is selected, otherwise use the selected product type
             const productListForSubmit = productTypes.length ? productTypes : FALLBACK_PRODUCT_TYPES;
             const selectedProduct = productListForSubmit.find((item) => String(item.id) === formData.productType);
@@ -215,18 +403,30 @@ const CustomerDashboard = () => {
                     ? formData.customProductType
                     : selectedProduct?.name ?? formData.productType;
 
+            const finalPickupAddress = [
+                formData.pickupHouseNo ? `H.No: ${formData.pickupHouseNo}` : '',
+                formData.pickupBuildingNo ? `Bldg: ${formData.pickupBuildingNo}` : '',
+                formData.pickup
+            ].filter(Boolean).join(', ');
+
+            const finalDropAddress = [
+                formData.dropHouseNo ? `H.No: ${formData.dropHouseNo}` : '',
+                formData.dropBuildingNo ? `Bldg: ${formData.dropBuildingNo}` : '',
+                formData.destination
+            ].filter(Boolean).join(', ');
+
             const payload = {
                 customerId: user?.userId || user?.id || user?.UserId || '',
                 customerName: user?.firstName || user?.name || user?.company || 'Customer',
-                pickupAddress: formData.pickup,
-                dropAddress: formData.destination,
+                pickupAddress: finalPickupAddress,
+                dropAddress: finalDropAddress,
                 pickupLat: parseNum(formData.pickupLat),
                 pickupLng: parseNum(formData.pickupLng),
                 dropLat: parseNum(formData.dropLat),
                 dropLng: parseNum(formData.dropLng),
                 goodsWeight: parseNum(formData.weight),
                 goodsType: finalProductType,
-                estimatedFare: 0,
+                estimatedFare: calculateLiveFare(),
                 scheduledTime: new Date().toISOString(),
                 CT_VehicleType: toCommonTypeId(formData.vehicle),
                 CTBodyType: toCommonTypeId(formData.ctBodyType),
@@ -243,8 +443,8 @@ const CustomerDashboard = () => {
                 throw new Error(data.message || data.Message || 'Ride request creation failed.');
             }
 
-                const selectedVehicleType = vehicleTypes.find((v) => v.id === Number(formData.vehicle));
-                const vehicleName = selectedVehicleType ? selectedVehicleType.name : 'Unknown Vehicle';
+            const selectedVehicleType = vehicleTypes.find((v) => v.id === Number(formData.vehicle));
+            const vehicleName = selectedVehicleType ? selectedVehicleType.name : 'Unknown Vehicle';
 
             const newShipment: Shipment = {
                 id: bookingId,
@@ -259,8 +459,12 @@ const CustomerDashboard = () => {
             };
 
             setShipments((prev) => [newShipment, ...prev]);
-            setStatusDrafts((prev) => ({ ...prev, [bookingId]: 'request_for_ride' }));
-            setSubmitStatus('success');
+            setSubmitStatus('idle'); // clear processing button spinner
+            
+            // Promote simulated searching ID (-1) to the actual booking ID
+            setSearchingBookingId(bookingId);
+
+            // Clean the form
             setFormData({
                 productType: '',
                 customProductType: '',
@@ -274,53 +478,43 @@ const CustomerDashboard = () => {
                 vehicle: '',
                 ctBodyType: '',
                 ctTyreType: '',
+                pickupBuildingNo: '',
+                pickupHouseNo: '',
+                dropBuildingNo: '',
+                dropHouseNo: '',
             });
-            setTimeout(() => {
-                setSubmitStatus('idle');
-                openShipmentList();
-            }, 3000);
         } catch (err: any) {
             console.error(err);
-            setErrorMessage(err?.response?.data?.message || err?.response?.data?.Message || err?.message || 'Failed to submit shipment.');
-            setSubmitStatus('error');
+            const errText = err?.response?.data?.message || err?.response?.data?.Message || err?.message || 'Failed to submit shipment.';
+            
+            // Instead of instantly failing on screen, save the error and switch searching ID to simulated failure state (-100)
+            // This lets the premium animation play for 15 seconds before revealing the error!
+            setErrorMessage(errText);
+            setSearchingBookingId(-100);
+            setSubmitStatus('idle');
+            
+            // Clean the form as well so they don't have to re-fill or can modify
+            setFormData({
+                productType: '',
+                customProductType: '',
+                pickup: '',
+                destination: '',
+                pickupLat: '',
+                pickupLng: '',
+                dropLat: '',
+                dropLng: '',
+                weight: '',
+                vehicle: '',
+                ctBodyType: '',
+                ctTyreType: '',
+                pickupBuildingNo: '',
+                pickupHouseNo: '',
+                dropBuildingNo: '',
+                dropHouseNo: '',
+            });
         }
     };
 
-    const updateRideStatus = async (rideId: number) => {
-        const status = statusDrafts[rideId];
-        if (!status) return;
-
-        try {
-            const res = await apiClient.patch(`/Vehicle/${rideId}/rideStatus`, null, { params: { status } });
-            const data = res.data || {};
-            const next = (data.rideStatus || data.RideStatus || status) as RideStatus;
-            setShipments((prev) => prev.map((shipment) => (shipment.id === rideId ? { ...shipment, status: next } : shipment)));
-        } catch (err: any) {
-            alert(err?.response?.data?.message || err?.response?.data?.Message || 'Unable to update ride status.');
-        }
-    };
-
-    const markRidePayment = async (rideId: number) => {
-        const amount = Number(paymentDrafts[rideId] || 0);
-        if (!amount || amount <= 0) {
-            alert('Enter a valid payment amount.');
-            return;
-        }
-
-        try {
-            const payload = {
-                rideId,
-                amount,
-                paymentMode: 'ride_payment',
-                transactionReference: `CUSTOMER_PAY_${rideId}_${Date.now()}`,
-            };
-            const res = await apiClient.post('/DriverFinance/ridePayment', payload);
-            alert(res.data?.message || res.data?.Message || 'Ride payment recorded.');
-            setPaymentDrafts((prev) => ({ ...prev, [rideId]: '' }));
-        } catch (err: any) {
-            alert(err?.response?.data?.message || err?.response?.data?.Message || 'Payment update failed.');
-        }
-    };
 
     const reportDispute = async (rideId: number, endpoint: 'reportComplaint' | 'reportRideIssue') => {
         const description = (disputeDrafts[rideId] || '').trim();
@@ -344,18 +538,231 @@ const CustomerDashboard = () => {
         }
     };
 
+    const submitDriverRating = async () => {
+        if (!selectedRatingBooking) return;
+        const customerId = user?.userId || user?.id || user?.UserId || '';
+        const driverUserId = selectedRatingBooking.driverUserId || selectedRatingBooking.DriverUserId;
+
+        if (!driverUserId) {
+            alert('No driver user account is linked to this shipment.');
+            return;
+        }
+
+        setSubmittingRating(true);
+        try {
+            await apiClient.post(`/Vehicle/rateDriver?customerUserId=${customerId}&driverUserId=${driverUserId}&bookingId=${selectedRatingBooking.id}&score=${ratingScore}&comment=${encodeURIComponent(ratingComment)}`);
+            alert('Thank you! Your rating has been submitted.');
+            setIsRatingModalOpen(false);
+            setRatingScore(5);
+            setRatingComment('');
+            setSelectedRatingBooking(null);
+        } catch (err: any) {
+            console.error('Rating submit error:', err);
+            alert(err?.response?.data?.message || err?.response?.data?.Message || 'Failed to submit rating.');
+        } finally {
+            setSubmittingRating(false);
+        }
+    };
+
+    const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+        if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+        const R = 6371; // Radius in km
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = 
+            Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        const d = R * c;
+        return Math.round(d * 10) / 10;
+    };
+
+    const reverseGeocode = async (lat: number, lng: number, field: 'pickup' | 'destination') => {
+        try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`);
+            const data = await res.json();
+            if (data && data.display_name) {
+                setFormData(p => ({ ...p, [field]: data.display_name }));
+            }
+        } catch (err) {
+            console.error("Reverse geocoding failed:", err);
+        }
+    };
+
+    const forwardGeocode = async (address: string, field: 'pickup' | 'destination') => {
+        if (!address || address.trim().length < 3) return;
+        try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`);
+            const data = await res.json();
+            if (data && data.length > 0) {
+                const item = data[0];
+                const latStr = parseFloat(item.lat).toFixed(6);
+                const lngStr = parseFloat(item.lon).toFixed(6);
+                if (field === 'pickup') {
+                    setFormData(p => ({ ...p, pickupLat: latStr, pickupLng: lngStr }));
+                } else {
+                    setFormData(p => ({ ...p, dropLat: latStr, dropLng: lngStr }));
+                }
+            }
+        } catch (err) {
+            console.error("Forward geocoding failed:", err);
+        }
+    };
+
+    const calculateLiveFare = () => {
+        const pLat = parseFloat(formData.pickupLat);
+        const pLng = parseFloat(formData.pickupLng);
+        const dLat = parseFloat(formData.dropLat);
+        const dLng = parseFloat(formData.dropLng);
+        if (isNaN(pLat) || isNaN(pLng) || isNaN(dLat) || isNaN(dLng)) {
+            return 0;
+        }
+
+        const distanceKm = calculateDistance(pLat, pLng, dLat, dLng);
+        if (distanceKm <= 0) return 0;
+
+        const fare = distanceKm * 20;
+        return Math.max(20, Math.round(fare));
+    };
+
     const productPicklist = productTypes.length ? productTypes : FALLBACK_PRODUCT_TYPES;
 
     return (
         <>
-            <div className="min-h-screen bg-slate-50 py-8 font-sans">
-            <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div className="flex h-screen bg-slate-50 overflow-hidden font-sans w-full">
+                {/* Mobile Sidebar Backdrop */}
+                {sidebarOpen && (
+                    <div 
+                        onClick={() => setSidebarOpen(false)} 
+                        className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-30 md:hidden" 
+                    />
+                )}
+
+                {/* Sidebar */}
+                <aside className={`fixed md:relative inset-y-0 left-0 z-40 w-72 bg-white border-r border-slate-200 flex flex-col shadow-sm transition-transform duration-300 transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}>
+                    <div className="h-20 flex items-center px-8 border-b border-slate-100 justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-primary-500/30">
+                                <Truck className="text-white h-5 w-5" />
+                            </div>
+                            <span className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">Navgatix</span>
+                        </div>
+                        {/* Mobile Close Button */}
+                        <button onClick={() => setSidebarOpen(false)} className="md:hidden p-2 hover:bg-slate-100 rounded-lg text-slate-500">
+                            ✕
+                        </button>
+                    </div>
+
+                    <div className="p-6">
+                        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 px-2">Menu</p>
+                        <nav className="space-y-2">
+                            <button
+                                onClick={() => { openShipmentList(); setSidebarOpen(false); }}
+                                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${activeTab === 'shipments' ? 'bg-primary-50 text-primary-700 font-semibold shadow-sm' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}`}
+                            >
+                                <LayoutDashboard className={`h-5 w-5 ${activeTab === 'shipments' ? 'text-primary-600' : ''}`} />
+                                Overview
+                            </button>
+                            <button
+                                onClick={() => { openNewShipment(); setSidebarOpen(false); }}
+                                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${activeTab === 'new' ? 'bg-primary-50 text-primary-700 font-semibold shadow-sm' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}`}
+                            >
+                                <Package className={`h-5 w-5 ${activeTab === 'new' ? 'text-primary-600' : ''}`} />
+                                Add Shipment
+                            </button>
+                        </nav>
+                    </div>
+
+                    <div className="mt-auto p-6 border-t border-slate-100">
+                        <nav className="space-y-2 mb-6">
+                            <button 
+                                onClick={() => setSettingsExpanded(!settingsExpanded)}
+                                className="w-full flex items-center justify-between px-4 py-3 rounded-xl text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-all duration-200 cursor-pointer"
+                            >
+                                <div className="flex items-center gap-3">
+                                    <Settings className="h-5 w-5" />
+                                    <span>Settings</span>
+                                </div>
+                                <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${settingsExpanded ? 'rotate-180' : ''}`} />
+                            </button>
+                            
+                            {settingsExpanded && (
+                                <div className="pl-4 space-y-1 mt-1 animate-in slide-in-from-top-2 duration-200">
+                                    <button 
+                                        onClick={() => { navigate('/profile?tab=profile'); setSidebarOpen(false); }}
+                                        className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer text-left"
+                                    >
+                                        <User className="h-4 w-4 text-slate-400" />
+                                        Profile Info
+                                    </button>
+                                    <button 
+                                        onClick={() => { navigate('/profile?tab=addresses'); setSidebarOpen(false); }}
+                                        className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer text-left"
+                                    >
+                                        <Home className="h-4 w-4 text-slate-400" />
+                                        Saved Addresses
+                                    </button>
+                                    <button 
+                                        onClick={() => { navigate('/profile?tab=payments'); setSidebarOpen(false); }}
+                                        className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer text-left"
+                                    >
+                                        <CreditCard className="h-4 w-4 text-slate-400" />
+                                        Wallet & Payments
+                                    </button>
+                                    <button 
+                                        onClick={() => { navigate('/profile?tab=preferences'); setSidebarOpen(false); }}
+                                        className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer text-left"
+                                    >
+                                        <Bell className="h-4 w-4 text-slate-400" />
+                                        Preferences & Alerts
+                                    </button>
+                                    <button 
+                                        onClick={() => { navigate('/profile?tab=security'); setSidebarOpen(false); }}
+                                        className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer text-left"
+                                    >
+                                        <Key className="h-4 w-4 text-slate-400" />
+                                        Security & Access
+                                    </button>
+                                </div>
+                            )}
+                        </nav>
+
+                        <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
+                                {user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'C'}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm font-bold text-slate-900 truncate">{user?.firstName || user?.name || 'Customer'}</p>
+                                <p className="text-xs text-slate-500 truncate">CUSTOMER</p>
+                            </div>
+                            <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
+                                <LogOut className="h-4 w-4" />
+                            </button>
+                        </div>
+                    </div>
+                </aside>
+
+                {/* Main Content Area */}
+                <main className="flex-1 overflow-y-auto relative z-10 flex flex-col">
+                    {/* Mobile Header Bar */}
+                    <header className="md:hidden h-16 bg-slate-900 text-white flex items-center justify-between px-4 sticky top-0 z-20 shadow-md">
+                        <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-white/10 rounded-lg">
+                            <Menu className="h-6 w-6 text-white" />
+                        </button>
+                        <span className="font-extrabold tracking-tight">Navgatix</span>
+                        <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm">
+                            {user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'C'}
+                        </div>
+                    </header>
+
+                    <div className="flex-1 p-6 md:p-8 max-w-7xl w-full mx-auto">
                 <div className="mb-8 overflow-hidden rounded-[2rem] bg-slate-900 text-white shadow-2xl shadow-slate-300/40">
                     <div className="grid gap-8 px-8 py-10 lg:grid-cols-[1.3fr_0.9fr] lg:px-10">
                         <div>
                             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-primary-200">
                                 <Truck className="h-4 w-4" />
-                                Need a driver
+                                Hii, {user?.firstName || user?.name || 'Customer'}
                             </div>
                             <h1 className="mt-5 text-4xl font-extrabold tracking-tight">Customer (Logistics) Dashboard</h1>
                             <p className="mt-4 max-w-2xl text-lg leading-8 text-slate-300">
@@ -437,6 +844,86 @@ const CustomerDashboard = () => {
                                     <Search className="h-5 w-5 text-primary-600" /> Active Shipments
                                 </h2>
 
+                                {/* Prominent Active Shipment Hero Live Tracking Card */}
+                                {shipments.filter(s => ['driver_assigned', 'driver_arriving', 'ride_started'].includes(s.status)).map((activeShip) => (
+                                    <div key={activeShip.id} className="mb-8 rounded-3xl border border-indigo-150 bg-indigo-50/20 p-6 shadow-md border-t-4 border-t-indigo-600 animate-in fade-in slide-in-from-top duration-500">
+                                        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-4">
+                                            <div>
+                                                <span className="rounded-full bg-indigo-100 px-3 py-1 text-xs font-bold text-indigo-700 tracking-wider uppercase">
+                                                    Active Delivery: Ride #{activeShip.id}
+                                                </span>
+                                                <h3 className="text-xl font-black text-slate-900 mt-2">Live Shipment Tracking</h3>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Moving Status</p>
+                                                <p className="text-sm font-extrabold text-indigo-600 uppercase mt-0.5 animate-pulse">
+                                                    {activeShip.status === 'driver_assigned' && 'Driver Assigned'}
+                                                    {activeShip.status === 'driver_arriving' && 'Driver is Arriving at Pickup'}
+                                                    {activeShip.status === 'ride_started' && 'Journey in Progress'}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                            <div className="lg:col-span-2 rounded-2xl overflow-hidden shadow-sm border border-slate-200">
+                                                <TrackingMap 
+                                                    bookingId={activeShip.id}
+                                                    pickupLat={activeShip.pickupLat || 28.6139}
+                                                    pickupLng={activeShip.pickupLng || 77.2090}
+                                                    dropLat={activeShip.dropLat || 19.0760}
+                                                    dropLng={activeShip.dropLng || 72.8777}
+                                                />
+                                            </div>
+
+                                            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex flex-col justify-between">
+                                                <div className="space-y-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-700 text-lg uppercase shadow-sm">
+                                                            {activeShip.driverName?.substring(0, 2) || 'DR'}
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-xs font-semibold text-slate-500 uppercase">Your Driver</p>
+                                                            <p className="font-bold text-slate-900 text-base">{activeShip.driverName || 'Assigned Driver'}</p>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="border-t border-slate-100 pt-3 space-y-2 text-sm">
+                                                        <div className="flex justify-between">
+                                                            <span className="text-slate-500">Vehicle:</span>
+                                                            <span className="font-semibold text-slate-800">{activeShip.vehicleName || 'N/A'}</span>
+                                                        </div>
+                                                        <div className="flex justify-between">
+                                                            <span className="text-slate-500">Vehicle No:</span>
+                                                            <span className="font-semibold text-slate-800 uppercase bg-slate-100 px-2 py-0.5 rounded text-xs">{activeShip.vehicleNumber || 'N/A'}</span>
+                                                        </div>
+                                                        <div className="flex justify-between">
+                                                            <span className="text-slate-500">Estimated Fare:</span>
+                                                            <span className="font-bold text-slate-800">Rs {activeShip.estimatedFare}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex gap-3 mt-6">
+                                                    {activeShip.driverPhone && (
+                                                        <a 
+                                                            href={`tel:${activeShip.driverPhone}`} 
+                                                            className="flex-1 text-center py-2.5 rounded-xl border border-slate-200 text-slate-700 font-bold text-sm bg-slate-50 hover:bg-slate-100 transition-all flex items-center justify-center gap-2"
+                                                        >
+                                                            📞 Call
+                                                        </a>
+                                                    )}
+                                                    <button 
+                                                        onClick={() => setChatBookingId(activeShip.id)}
+                                                        className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition-all flex items-center justify-center gap-2"
+                                                    >
+                                                        💬 Chat
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+
                                 {shipments.length === 0 ? (
                                     <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-100/50 p-12 text-center text-slate-500">
                                         <p>No active shipments found for this customer account yet.</p>
@@ -477,38 +964,6 @@ const CustomerDashboard = () => {
                                                     </div>
                                                 </div>
 
-                                                <div className="mb-3 grid gap-3 md:grid-cols-3">
-                                                    <select
-                                                        value={statusDrafts[shipment.id] || shipment.status}
-                                                        onChange={(e) => setStatusDrafts((prev) => ({ ...prev, [shipment.id]: e.target.value as RideStatus }))}
-                                                        className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                                                    >
-                                                        {STATUS_OPTIONS.map((status) => (
-                                                            <option key={status} value={status}>{status}</option>
-                                                        ))}
-                                                    </select>
-                                                    <button
-                                                        onClick={() => updateRideStatus(shipment.id)}
-                                                        className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-                                                    >
-                                                        Update Ride Status
-                                                    </button>
-                                                    <div className="flex gap-2">
-                                                        <input
-                                                            value={paymentDrafts[shipment.id] || ''}
-                                                            onChange={(e) => setPaymentDrafts((prev) => ({ ...prev, [shipment.id]: e.target.value }))}
-                                                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                                                            placeholder="Payment amount"
-                                                            type="number"
-                                                        />
-                                                        <button
-                                                            onClick={() => markRidePayment(shipment.id)}
-                                                            className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white"
-                                                        >
-                                                            Pay
-                                                        </button>
-                                                    </div>
-                                                </div>
 
                                                 <div className="grid gap-3 md:grid-cols-3">
                                                     <input
@@ -550,6 +1005,19 @@ const CustomerDashboard = () => {
                                                     <MessageCircle className="h-4 w-4 text-emerald-600" />
                                                     Chat with Driver
                                                 </button>
+
+                                                {shipment.status === 'ride_completed' && (
+                                                    <button
+                                                        onClick={() => {
+                                                            setSelectedRatingBooking(shipment);
+                                                            setIsRatingModalOpen(true);
+                                                        }}
+                                                        className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-600 py-3 text-sm font-bold text-white shadow-md shadow-amber-500/10 transition-all cursor-pointer"
+                                                    >
+                                                        <Star className="h-4 w-4 fill-white" />
+                                                        Rate Driver
+                                                    </button>
+                                                )}
                                             </div>
                                         ))}
                                     </div>
@@ -678,27 +1146,81 @@ const CustomerDashboard = () => {
                                     <div className="grid gap-4 md:grid-cols-2">
                                         <div>
                                             <label className="mb-2 block text-sm font-semibold text-slate-700">Pickup Location</label>
-                                            <input
-                                                required
-                                                type="text"
-                                                name="pickup"
-                                                value={formData.pickup}
-                                                onChange={handleChange}
-                                                placeholder="Pickup address"
-                                                className="w-full rounded-xl border border-slate-300 px-4 py-3"
-                                            />
+                                            <div className="flex gap-2">
+                                                <input
+                                                    required
+                                                    type="text"
+                                                    name="pickup"
+                                                    value={formData.pickup}
+                                                    onChange={handleChange}
+                                                    placeholder="Pickup address"
+                                                    className="flex-1 rounded-xl border border-slate-300 px-4 py-3"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => forwardGeocode(formData.pickup, 'pickup')}
+                                                    className="bg-slate-900 hover:bg-slate-800 text-white px-4 rounded-xl text-sm font-semibold transition-all cursor-pointer"
+                                                >
+                                                    Locate
+                                                </button>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2 mt-2">
+                                                <input
+                                                    type="text"
+                                                    name="pickupBuildingNo"
+                                                    value={formData.pickupBuildingNo}
+                                                    onChange={handleChange}
+                                                    placeholder="Building No. (Optional)"
+                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    name="pickupHouseNo"
+                                                    value={formData.pickupHouseNo}
+                                                    onChange={handleChange}
+                                                    placeholder="House/Apt No. (Optional)"
+                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                />
+                                            </div>
                                         </div>
                                         <div>
                                             <label className="mb-2 block text-sm font-semibold text-slate-700">Drop Location</label>
-                                            <input
-                                                required
-                                                type="text"
-                                                name="destination"
-                                                value={formData.destination}
-                                                onChange={handleChange}
-                                                placeholder="Drop address"
-                                                className="w-full rounded-xl border border-slate-300 px-4 py-3"
-                                            />
+                                            <div className="flex gap-2">
+                                                <input
+                                                    required
+                                                    type="text"
+                                                    name="destination"
+                                                    value={formData.destination}
+                                                    onChange={handleChange}
+                                                    placeholder="Drop address"
+                                                    className="flex-1 rounded-xl border border-slate-300 px-4 py-3"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => forwardGeocode(formData.destination, 'destination')}
+                                                    className="bg-slate-900 hover:bg-slate-800 text-white px-4 rounded-xl text-sm font-semibold transition-all cursor-pointer"
+                                                >
+                                                    Locate
+                                                </button>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2 mt-2">
+                                                <input
+                                                    type="text"
+                                                    name="dropBuildingNo"
+                                                    value={formData.dropBuildingNo}
+                                                    onChange={handleChange}
+                                                    placeholder="Building No. (Optional)"
+                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    name="dropHouseNo"
+                                                    value={formData.dropHouseNo}
+                                                    onChange={handleChange}
+                                                    placeholder="House/Apt No. (Optional)"
+                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                />
+                                            </div>
                                         </div>
                                     </div>
 
@@ -736,6 +1258,7 @@ const CustomerDashboard = () => {
                                                                 const marker = e.target;
                                                                 const position = marker.getLatLng();
                                                                 setFormData(p => ({ ...p, pickupLat: position.lat.toFixed(6), pickupLng: position.lng.toFixed(6) }));
+                                                                reverseGeocode(position.lat, position.lng, 'pickup');
                                                             },
                                                         }}
                                                     />
@@ -750,6 +1273,7 @@ const CustomerDashboard = () => {
                                                                 const marker = e.target;
                                                                 const position = marker.getLatLng();
                                                                 setFormData(p => ({ ...p, dropLat: position.lat.toFixed(6), dropLng: position.lng.toFixed(6) }));
+                                                                reverseGeocode(position.lat, position.lng, 'destination');
                                                             },
                                                         }}
                                                     />
@@ -806,6 +1330,19 @@ const CustomerDashboard = () => {
                                             </div>
                                         </div>
                                     </div>
+
+                                    {/* Live Price Preview */}
+                                    {calculateLiveFare() > 0 && (
+                                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 flex items-center justify-between shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                            <div>
+                                                <h4 className="text-sm font-bold text-amber-800">Estimated Delivery Fare</h4>
+                                                <p className="text-xs text-amber-600 mt-0.5">Calculated based on distance and selected vehicle type.</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <span className="text-2xl font-black text-amber-900">Rs {calculateLiveFare().toLocaleString()}</span>
+                                            </div>
+                                        </div>
+                                    )}
 
                                     <div className="flex items-center gap-4 pt-2">
                                         <button type="submit" disabled={submitStatus === 'loading'} className="btn-primary flex-1 rounded-xl py-4 text-lg font-bold">
@@ -869,6 +1406,8 @@ const CustomerDashboard = () => {
                     </div>
                 </div>
             </div>
+        </main>
+    </div>
 
             {/* Tracking Modal */}
             {trackingBooking && (
@@ -894,20 +1433,179 @@ const CustomerDashboard = () => {
                                 dropLat={trackingBooking.dropLat || formData.dropLat || 19.0760}
                                 dropLng={trackingBooking.dropLng || formData.dropLng || 72.8777}
                             />
-                            <div className="mt-6 flex items-center gap-4 rounded-2xl bg-slate-50 p-4">
-                                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-100 text-primary-600">
-                                    <Truck className="h-5 w-5" />
+                            <div className="mt-6 flex items-center justify-between gap-4 rounded-2xl bg-slate-50 p-4">
+                                <div className="flex items-center gap-4">
+                                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-100 text-primary-600">
+                                        <Truck className="h-5 w-5" />
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-slate-900">{trackingBooking.vehicle}</p>
+                                        <p className="text-sm text-slate-500">Status: <span className="font-semibold text-primary-600 uppercase">{trackingBooking.status}</span></p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="font-bold text-slate-900">{trackingBooking.vehicle}</p>
-                                    <p className="text-sm text-slate-500">Status: <span className="font-semibold text-primary-600 uppercase">{trackingBooking.status}</span></p>
+                                <div className="flex gap-2">
+                                    {trackingBooking.driverPhone && (
+                                        <a 
+                                            href={`tel:${trackingBooking.driverPhone}`} 
+                                            className="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 font-bold text-sm bg-white hover:bg-slate-50 transition-all flex items-center gap-1.5"
+                                        >
+                                            📞 Call
+                                        </a>
+                                    )}
+                                    <button 
+                                        onClick={() => {
+                                            setChatBookingId(trackingBooking.id);
+                                            setTrackingBooking(null);
+                                        }}
+                                        className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition-all flex items-center gap-1.5"
+                                    >
+                                        💬 Chat
+                                    </button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
             )}
-        </div>
+            {/* Realtime Searching Pulse / Radar Overlay */}
+            {searchingBookingId !== null && (
+                <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4">
+                    <div className="relative w-full max-w-md rounded-[2.5rem] bg-white p-8 text-center shadow-2xl overflow-hidden border border-slate-100 flex flex-col items-center">
+                        
+                        {matchedDriverDetails ? (
+                            // SUCCESS MATCH SCREEN
+                            <div className="space-y-6 animate-in zoom-in duration-300 w-full">
+                                <div className="mx-auto h-20 w-20 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-600 shadow-md">
+                                    <CheckCircle className="h-10 w-10 animate-bounce" />
+                                </div>
+                                <div className="space-y-1">
+                                    <h3 className="text-2xl font-black text-slate-900 tracking-tight">Driver Assigned!</h3>
+                                    <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider">Your load shipment is matched successfully</p>
+                                </div>
+
+                                {/* Driver details panel */}
+                                <div className="p-5 bg-slate-50 rounded-2xl border border-slate-150 text-left space-y-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center font-bold text-indigo-700 text-sm">
+                                            {matchedDriverDetails.driverName ? matchedDriverDetails.driverName.split(' ').map((n: string) => n[0]).join('') : 'D'}
+                                        </div>
+                                        <div>
+                                            <p className="font-bold text-slate-800 text-sm">{matchedDriverDetails.driverName || 'Madan Kumar'}</p>
+                                            <p className="text-xs text-slate-400">Mobile: {matchedDriverDetails.driverPhone || '+91 98765 43210'}</p>
+                                        </div>
+                                    </div>
+                                    <div className="border-t pt-3 flex justify-between text-xs font-semibold text-slate-600">
+                                        <div>
+                                            <span className="text-[10px] text-slate-400 block font-bold">VEHICLE DETAILS</span>
+                                            <span className="text-slate-800 uppercase">
+                                                {matchedDriverDetails.vehicleNumber || 'Unassigned'}
+                                                {matchedDriverDetails.vehicleName && ` - ${matchedDriverDetails.vehicleName}`}
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] text-slate-400 block font-bold">ESTIMATED ARRIVAL</span>
+                                            <span className="text-emerald-600 font-extrabold">3 Mins (1.8 km)</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="pt-2 flex gap-3">
+                                    <button 
+                                        onClick={() => {
+                                            const shipment = shipments.find(s => s.id === searchingBookingId);
+                                            if (shipment) setTrackingBooking(shipment);
+                                            setSearchingBookingId(null);
+                                        }}
+                                        className="flex-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-white py-3.5 font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer"
+                                    >
+                                        Track Live
+                                    </button>
+                                    <button 
+                                        onClick={() => setSearchingBookingId(null)}
+                                        className="flex-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 py-3.5 font-bold text-sm transition-all cursor-pointer"
+                                    >
+                                        Done
+                                    </button>
+                                </div>
+                            </div>
+                        ) : searchTimeoutError ? (
+                            // TIMEOUT NO DRIVERS SCREEN
+                            <div className="space-y-6 animate-in zoom-in duration-300 w-full">
+                                <div className="mx-auto h-20 w-20 rounded-full bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600 shadow-md">
+                                    <X className="h-10 w-10 animate-pulse" />
+                                </div>
+                                <div className="space-y-1">
+                                    <h3 className="text-2xl font-black text-slate-900 tracking-tight text-center">No Drivers Found</h3>
+                                    <p className="text-rose-600 text-sm font-semibold bg-rose-50 p-4 rounded-xl border border-rose-100 mt-2 text-center">
+                                        Could not able to find driver, so sorry for not loading your shipment.
+                                    </p>
+                                    <div className="mt-3 flex items-center justify-center gap-2 text-rose-500/80 text-xs font-bold uppercase tracking-wider">
+                                        <span className="animate-bounce">⏳</span>
+                                        <span>Please try again after 5 minutes</span>
+                                    </div>
+                                </div>
+                                <div className="pt-2 flex gap-3 w-full">
+                                    <button 
+                                        onClick={() => handleCancelSearch(searchingBookingId!)}
+                                        className="flex-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-white py-3.5 font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer"
+                                    >
+                                        Adjust Details
+                                    </button>
+                                    <button 
+                                        onClick={() => setSearchingBookingId(null)}
+                                        className="flex-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 py-3.5 font-bold text-sm transition-all cursor-pointer"
+                                    >
+                                        Close
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            // ACTIVE SEARCHING SCREEN
+                            <div className="space-y-6 w-full flex flex-col items-center">
+                                {/* Breathtaking pulsing concentric ripples & radar */}
+                                <div className="relative flex items-center justify-center h-48 w-48 mb-4">
+                                    <div className="absolute inset-0 bg-primary-500/10 rounded-full animate-ping"></div>
+                                    <div className="absolute inset-4 bg-primary-500/20 rounded-full animate-pulse"></div>
+                                    <div className="absolute inset-8 bg-primary-500/30 rounded-full animate-ping"></div>
+                                    <div className="absolute inset-0 border-4 border-dashed border-primary-500/30 rounded-full animate-spin [animation-duration:12s]"></div>
+                                    
+                                    <div className="relative z-10 w-24 h-24 bg-white rounded-full border border-slate-100 shadow-xl flex items-center justify-center">
+                                        <Truck className="h-10 w-10 text-primary-600 animate-bounce" />
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2 w-full">
+                                    <h3 className="text-xl font-black text-slate-900 tracking-tight">
+                                        {searchPhase === 0 && "Finding nearby drivers..."}
+                                        {searchPhase === 1 && "Searching available transport..."}
+                                        {searchPhase === 2 && "Connecting your shipment..."}
+                                        {searchPhase === 3 && "Expanding search radius..."}
+                                    </h3>
+                                    
+                                    {/* Horizontal step indicator */}
+                                    <div className="flex justify-center gap-1.5 pt-1.5">
+                                        <span className={`h-1.5 rounded-full transition-all duration-300 ${searchPhase >= 0 ? 'w-6 bg-primary-600' : 'w-2 bg-slate-200'}`}></span>
+                                        <span className={`h-1.5 rounded-full transition-all duration-300 ${searchPhase >= 1 ? 'w-6 bg-primary-600' : 'w-2 bg-slate-200'}`}></span>
+                                        <span className={`h-1.5 rounded-full transition-all duration-300 ${searchPhase >= 2 ? 'w-6 bg-primary-600' : 'w-2 bg-slate-200'}`}></span>
+                                        <span className={`h-1.5 rounded-full transition-all duration-300 ${searchPhase >= 3 ? 'w-6 bg-primary-600' : 'w-2 bg-slate-200'}`}></span>
+                                    </div>
+                                    
+                                    <p className="text-slate-400 text-xs font-semibold tracking-wider pt-2">
+                                        TIMING OUT IN: <span className="text-primary-600 font-black">{searchTimeLeft}s</span>
+                                    </p>
+                                </div>
+
+                                <button 
+                                    onClick={() => handleCancelSearch(searchingBookingId)}
+                                    className="w-full mt-4 rounded-2xl border border-red-200 hover:bg-red-50 text-red-600 py-3.5 font-bold text-xs transition-all active:scale-[0.98] cursor-pointer"
+                                >
+                                    Cancel Search Request
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
 
         {/* Live Chat Panel */}
         {chatBookingId !== null && (
@@ -922,6 +1620,86 @@ const CustomerDashboard = () => {
                 }
                 onClose={() => setChatBookingId(null)}
             />
+        )}
+
+        {/* Rating Modal */}
+        {isRatingModalOpen && selectedRatingBooking && (
+            <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                        <h3 className="text-lg font-bold text-slate-900">Rate Your Ride</h3>
+                        <button onClick={() => { setIsRatingModalOpen(false); setSelectedRatingBooking(null); }} className="p-1 hover:bg-slate-100 rounded-full">
+                            <X className="h-5 w-5 text-slate-400" />
+                        </button>
+                    </div>
+                    <div className="text-center space-y-4">
+                        <p className="text-sm text-slate-500">How was your experience with the driver for Ride #{selectedRatingBooking.id}?</p>
+                        <div className="flex justify-center gap-2 py-2">
+                            {[1, 2, 3, 4, 5].map((star) => (
+                                <button
+                                    key={star}
+                                    type="button"
+                                    onClick={() => setRatingScore(star)}
+                                    className="focus:outline-none transition-transform active:scale-95"
+                                >
+                                    <Star
+                                        className={`h-8 w-8 transition-colors ${
+                                            star <= ratingScore ? 'text-amber-400 fill-amber-400' : 'text-slate-300'
+                                        }`}
+                                    />
+                                </button>
+                            ))}
+                        </div>
+                        <textarea
+                            value={ratingComment}
+                            onChange={(e) => setRatingComment(e.target.value)}
+                            placeholder="Write a comment about your experience..."
+                            className="w-full min-h-[100px] p-3 border border-slate-200 rounded-2xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+                        />
+                        <button
+                            onClick={submitDriverRating}
+                            disabled={submittingRating}
+                            className="w-full rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-bold py-3.5 text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+                        >
+                            {submittingRating ? 'Submitting...' : 'Submit Rating'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        {chatToast && (
+            <div 
+                onClick={() => {
+                    if (chatToast.bookingId) {
+                        setChatBookingId(chatToast.bookingId);
+                    }
+                    setChatToast(null);
+                }}
+                className="fixed bottom-6 right-6 z-50 max-w-sm w-full bg-slate-900/95 backdrop-blur text-white rounded-2xl p-4 shadow-2xl border border-slate-700/50 flex flex-col gap-3 animate-in slide-in-from-bottom-5 duration-300 cursor-pointer"
+            >
+                <div className="flex justify-between items-start">
+                    <div className="flex items-center gap-2 text-teal-400 font-bold text-sm">
+                        <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-500"></span>
+                        </span>
+                        New Message
+                    </div>
+                    <button 
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setChatToast(null);
+                        }} 
+                        className="text-slate-400 hover:text-white transition-colors"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+                <div className="space-y-1">
+                    <p className="font-bold text-sm">{chatToast.senderName}</p>
+                    <p className="text-xs text-slate-300 line-clamp-2">{chatToast.messageText}</p>
+                </div>
+            </div>
         )}
         </>
     );

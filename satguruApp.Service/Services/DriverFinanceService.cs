@@ -31,9 +31,12 @@ namespace satguruApp.Service.Services
             var driver = await _db.Drivers.FirstOrDefaultAsync(x => x.UserId == driverUserId && x.IsDeleted != true);
             if (driver != null)
             {
+                // Configurable commission rate (can be changed later)
+                const decimal CommissionRate = 0.10m;
+                var todayUtc = DateTime.UtcNow.Date;
                 summary.TotalEarnings = await _db.Bookings
-                    .Where(x => x.DriverId == driver.Id && x.CT_BookingStatus == RideStatus.RideCompleted && x.IsDeleted != true)
-                    .Select(x => x.FinalFare ?? x.EstimatedFare ?? 0)
+                    .Where(x => x.DriverId == driver.Id && x.CT_BookingStatus == RideStatus.RideCompleted && x.IsDeleted != true && x.CreatedAt >= todayUtc)
+                    .Select(x => (x.FinalFare ?? x.EstimatedFare ?? 0) * (1.0m - CommissionRate))
                     .SumAsync();
             }
 
@@ -105,7 +108,8 @@ namespace satguruApp.Service.Services
             _db.Payments.Add(payment);
 
             var wallet = await EnsureWalletAsync(driver.UserId);
-            wallet.Balance = (wallet.Balance ?? 0) + model.Amount;
+            var netCredited = model.Amount * 0.9m;
+            wallet.Balance = (wallet.Balance ?? 0) + netCredited;
             wallet.UpdatedAt = DateTime.UtcNow;
 
             if (!ride.FinalFare.HasValue || ride.FinalFare.Value <= 0)
@@ -144,8 +148,14 @@ namespace satguruApp.Service.Services
             };
 
             _db.Payments.Add(payment);
+
+            // Deduct balance immediately upon request submission
+            wallet.Balance = balance - model.Amount;
+            wallet.UpdatedAt = DateTime.UtcNow;
+            _db.Wallets.Update(wallet);
+
             await _db.SaveChangesAsync();
-            return Success("Withdrawal request submitted.", payment.Id, balance);
+            return Success("Withdrawal request submitted.", payment.Id, wallet.Balance ?? 0);
         }
 
         public async Task<DriverFinanceResultViewModel> ProcessWithdrawalAsync(WithdrawalActionViewModel model)
@@ -177,18 +187,14 @@ namespace satguruApp.Service.Services
 
             if (action == "approve")
             {
-                var amount = payment.Amount ?? 0;
-                if (balance < amount)
-                {
-                    return Fail("Insufficient wallet balance to approve withdrawal.");
-                }
-
-                wallet.Balance = balance - amount;
-                wallet.UpdatedAt = DateTime.UtcNow;
                 payment.PaymentStatus = "approved";
             }
             else
             {
+                var amount = payment.Amount ?? 0;
+                wallet.Balance = balance + amount;
+                wallet.UpdatedAt = DateTime.UtcNow;
+                _db.Wallets.Update(wallet);
                 payment.PaymentStatus = "rejected";
             }
 

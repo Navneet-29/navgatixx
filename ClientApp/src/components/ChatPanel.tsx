@@ -11,33 +11,60 @@ interface Message {
 }
 
 interface ChatPanelProps {
-    bookingId: number;
+    bookingId?: number;
+    roomName?: string;
     currentUserName: string;
     onClose: () => void;
 }
 
-const ChatPanel = ({ bookingId, currentUserName, onClose }: ChatPanelProps) => {
+const ChatPanel = ({ bookingId, roomName, currentUserName, onClose }: ChatPanelProps) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputText, setInputText] = useState('');
     const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
     const connectionRef = useRef<HubConnection | null>(null);
     const bottomRef = useRef<HTMLDivElement | null>(null);
 
+
     // Build and start the SignalR connection
     useEffect(() => {
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+
         const conn = buildChatConnection();
         connectionRef.current = conn;
 
         conn.on('ReceiveMessage', (sender: string, text: string, time: string) => {
+            const isOwn = sender === currentUserName;
             setMessages(prev => [
                 ...prev,
-                { sender, text, time, isOwn: sender === currentUserName },
+                { sender, text, time, isOwn },
             ]);
+
+            if (!isOwn) {
+                try {
+                    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                    audio.volume = 0.6;
+                    audio.play().catch(() => {});
+                } catch (e) {
+                    console.error('Failed to play sound:', e);
+                }
+
+                if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+                    new window.Notification(`New Message from ${sender}`, {
+                        body: text,
+                    });
+                }
+            }
         });
 
         conn.start()
             .then(async () => {
-                await conn.invoke('JoinBookingChat', bookingId);
+                if (roomName) {
+                    await conn.invoke('JoinGroupChat', roomName);
+                } else if (bookingId) {
+                    await conn.invoke('JoinBookingChat', bookingId);
+                }
                 setStatus('connected');
             })
             .catch(err => {
@@ -50,10 +77,14 @@ const ChatPanel = ({ bookingId, currentUserName, onClose }: ChatPanelProps) => {
         conn.onreconnected(() => setStatus('connected'));
 
         return () => {
-            conn.invoke('LeaveBookingChat', bookingId).finally(() => conn.stop());
+            if (roomName) {
+                conn.invoke('LeaveGroupChat', roomName).finally(() => conn.stop());
+            } else if (bookingId) {
+                conn.invoke('LeaveBookingChat', bookingId).finally(() => conn.stop());
+            }
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bookingId]);
+    }, [bookingId, roomName]);
 
     // Auto-scroll to latest message
     useEffect(() => {
@@ -64,7 +95,15 @@ const ChatPanel = ({ bookingId, currentUserName, onClose }: ChatPanelProps) => {
         const text = inputText.trim();
         if (!text || status !== 'connected') return;
         try {
-            await connectionRef.current?.invoke('SendMessage', bookingId, currentUserName, text);
+            const userStr = localStorage.getItem('user');
+            const currentUser = userStr ? JSON.parse(userStr) : null;
+            const senderUserId = currentUser?.userId || currentUser?.id || currentUser?.UserId || '';
+
+            if (roomName) {
+                await connectionRef.current?.invoke('SendGroupMessage', roomName, currentUserName, text, senderUserId);
+            } else if (bookingId) {
+                await connectionRef.current?.invoke('SendMessage', bookingId, currentUserName, text, senderUserId);
+            }
             setInputText('');
         } catch (err) {
             console.error('[ChatPanel] send failed:', err);

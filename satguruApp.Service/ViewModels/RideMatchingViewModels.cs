@@ -31,6 +31,7 @@ namespace satguruApp.Service.ViewModels
         public Guid VehicleId { get; set; }
         public string? VehicleNumber { get; set; }
         public double DistanceKm { get; set; }
+        public long? TransporterId { get; set; }
     }
 
     public class RideMatchingResultViewModel

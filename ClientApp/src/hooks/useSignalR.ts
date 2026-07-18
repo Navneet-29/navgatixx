@@ -9,7 +9,7 @@ export const useSignalR = (bookingId: number | null) => {
     if (!bookingId) return;
 
     const newConnection = new signalR.HubConnectionBuilder()
-      .withUrl('/trackingHub')
+      .withUrl('/hubs/location')
       .withAutomaticReconnect()
       .build();
 
@@ -20,15 +20,17 @@ export const useSignalR = (bookingId: number | null) => {
       })
       .catch(err => console.error('SignalR Connection Error: ', err));
 
-    newConnection.on('ReceiveLocation', (data) => {
-      setDriverLocation({ latitude: data.latitude, longitude: data.longitude });
+    newConnection.on('driverLocationUpdated', (data) => {
+      if (data && data.driverLatitude !== undefined && data.driverLongitude !== undefined) {
+        setDriverLocation({ latitude: data.driverLatitude, longitude: data.driverLongitude });
+      }
     });
 
     setConnection(newConnection);
 
     return () => {
       if (newConnection) {
-        newConnection.off('ReceiveLocation');
+        newConnection.off('driverLocationUpdated');
         newConnection.stop();
       }
     };

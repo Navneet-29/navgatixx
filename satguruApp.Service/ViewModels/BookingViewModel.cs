@@ -17,8 +17,11 @@ namespace satguruApp.Service.ViewModels
             CustomerName = !string.IsNullOrEmpty(model.CustomerName) ? model.CustomerName : (model.Customer != null ? (model.Customer.FirstName + (!string.IsNullOrEmpty(model.Customer.LastName) ? model.Customer.LastName : string.Empty)) : string.Empty),
             VehicleId = model.VehicleId,
             VehicleNumber = model.Vehicle != null ? model.Vehicle.VehicleNumber : string.Empty,
+            VehicleName = model.Vehicle != null ? model.Vehicle.VehicleName : string.Empty,
             DriverId = model.DriverId,
             DriverName = model.Driver != null ? model.Driver.Name : string.Empty,
+            DriverPhone = model.Driver != null ? model.Driver.Phone : string.Empty,
+            DriverUserId = model.Driver != null ? model.Driver.UserId : string.Empty,
             PickupAddress = model.PickupAddress,
             PickupLat = model.PickupLat,
             PickupLng = model.PickupLng,
@@ -34,6 +37,7 @@ namespace satguruApp.Service.ViewModels
             ScheduledTime = model.ScheduledTime,
             CreatedAt = model.CreatedAt,
             IsAvailable = model.IsAvailable,
+            IsPaid = false,
             DeptStateId = model.DeptStateId,
             DeptCityId = model.DeptCityId,
             ArrivalStateId = model.ArrivalStateId,
@@ -79,8 +83,11 @@ namespace satguruApp.Service.ViewModels
         public string? CustomerName { get; set; }
         public Guid? VehicleId { get; set; }
         public string? VehicleNumber { get; set; }
+        public string? VehicleName { get; set; }
         public Guid? DriverId { get; set; }
         public string? DriverName { get; set; }
+        public string? DriverPhone { get; set; }
+        public string? DriverUserId { get; set; }
         public string? PickupAddress { get; set; }
         public string? DropAddress { get; set; }
         public decimal? PickupLat { get; set; }
@@ -98,6 +105,7 @@ namespace satguruApp.Service.ViewModels
         public DateTime? CreatedAt { get; set; }
         public bool? IsAvailable { get; set; }
         public bool? IsDeleted { get; set; }
+        public bool IsPaid { get; set; }
         public int? DeptStateId { get; set; }
         public int? DeptCityId { get; set; }
         public int? ArrivalStateId { get; set; }

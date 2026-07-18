@@ -210,31 +210,69 @@ namespace satguruApp.Service.Services
             var fleetCount = await _db.Vehicles.CountAsync(v => v.TransporterId == transporter.Id && v.IsDeleted != true);
             var driverCount = await _db.Drivers.CountAsync(d => d.TransporterId == transporter.Id && d.IsDeleted != true);
             
-            // Assuming bookings with status "Driver Assigned" or "Ride Started" are ongoing
-            // You might need to adjust these state IDs based on your CommonType table
-            var ongoingTrips = await (from b in _db.Bookings
-                                      join v in _db.Vehicles on b.VehicleId equals v.Id
-                                      where v.TransporterId == transporter.Id && (b.CT_BookingStatus == 2 || b.CT_BookingStatus == 3) // Example IDs
-                                      select b).CountAsync();
+            var todayUtc = DateTime.UtcNow.Date;
 
-            var totalRides = await (from b in _db.Bookings
-                                    join v in _db.Vehicles on b.VehicleId equals v.Id
-                                    where v.TransporterId == transporter.Id && b.CT_BookingStatus == 4 // Example Completed ID
-                                    select b).CountAsync();
+            // Online / Offline drivers counts
+            var driversList = await (from d in _db.Drivers
+                                     join u in _db.UserInformations on d.UserId equals u.UserId into uj
+                                     from u in uj.DefaultIfEmpty()
+                                     where d.TransporterId == transporter.Id && d.IsDeleted != true
+                                     select new { d, isOnline = u != null && u.IsOnline == true }).ToListAsync();
 
-            var totalEarnings = await (from b in _db.Bookings
-                                       join v in _db.Vehicles on b.VehicleId equals v.Id
-                                       where v.TransporterId == transporter.Id && b.CT_BookingStatus == 4
-                                       select b.FinalFare).SumAsync() ?? 0;
+            var onlineDriversCount = driversList.Count(x => x.isOnline);
+            var offlineDriversCount = driversList.Count(x => !x.isOnline);
 
+            // Today's Shipments (Completed or Ongoing created today)
+            var todaysShipmentsCount = await (from b in _db.Bookings
+                                              join v in _db.Vehicles on b.VehicleId equals v.Id
+                                              where v.TransporterId == transporter.Id 
+                                                    && b.IsDeleted != true
+                                                    && b.CreatedAt >= todayUtc
+                                              select b).CountAsync();
+
+            // Active Shipments (Ongoing right now)
+            var activeShipmentsCount = await (from b in _db.Bookings
+                                              join v in _db.Vehicles on b.VehicleId equals v.Id
+                                              where v.TransporterId == transporter.Id 
+                                                    && b.IsDeleted != true
+                                                    && (b.CT_BookingStatus == RideStatus.DriverAssigned 
+                                                        || b.CT_BookingStatus == RideStatus.DriverArriving 
+                                                        || b.CT_BookingStatus == RideStatus.RideStarted)
+                                              select b).CountAsync();
+
+            // Today's Earnings (rides completed today)
+            var todaysFaresSum = await (from b in _db.Bookings
+                                        join v in _db.Vehicles on b.VehicleId equals v.Id
+                                        where v.TransporterId == transporter.Id 
+                                              && b.CT_BookingStatus == RideStatus.RideCompleted 
+                                              && b.IsDeleted != true
+                                              && b.CreatedAt >= todayUtc
+                                        select b.FinalFare ?? b.EstimatedFare ?? 0).SumAsync();
+
+            // Pending Driver Relationship requests
+            var pendingDriverRequestsCount = await _db.Notifications
+                .CountAsync(n => n.UserId == userId 
+                              && n.IsRead != true 
+                              && (n.Message.StartsWith("JOIN|") 
+                                  || n.Message.StartsWith("INVITE|") 
+                                  || n.Message.StartsWith("LEAVE|")));
+
+            // Maintain legacy properties alongside requested ones for safety
             return new TransporterDashboardSummaryViewModel
             {
                 TotalFleet = fleetCount,
                 ActiveDrivers = driverCount,
-                OngoingTrips = ongoingTrips,
-                TotalRides = totalRides,
-                TotalEarnings = totalEarnings,
-                PendingApprovals = 0 // Update if you have an approval queue
+                OngoingTrips = activeShipmentsCount,
+                TotalRides = todaysShipmentsCount,
+                TotalEarnings = todaysFaresSum,
+                PendingApprovals = pendingDriverRequestsCount,
+
+                TodaysEarnings = todaysFaresSum,
+                TodaysShipments = todaysShipmentsCount,
+                ActiveShipments = activeShipmentsCount,
+                OnlineDrivers = onlineDriversCount,
+                OfflineDrivers = offlineDriversCount,
+                PendingDriverRequests = pendingDriverRequestsCount
             };
         }
 
@@ -376,6 +414,11 @@ namespace satguruApp.Service.Services
 
                 var driverCompletedRides = driverCompletedBookings.Count;
                 var driverEarnings = driverCompletedBookings.Sum(b => b.FinalFare ?? 0);
+                
+                var today = DateTime.UtcNow.Date;
+                var driverDailyEarnings = driverCompletedBookings
+                    .Where(b => b.CreatedAt.HasValue && b.CreatedAt.Value.Date == today)
+                    .Sum(b => b.FinalFare ?? 0);
 
                 var vehicleCompletedRides = completedVehicleBookings.Count;
                 var vehicleEarnings = completedVehicleBookings.Sum(b => b.FinalFare ?? 0);
@@ -430,6 +473,10 @@ namespace satguruApp.Service.Services
                     Longitude = longitude,
                     LiveUpdatedAt = liveEntry?.LastUpdated,
                     LiveStatus = liveStatus,
+                    EstimatedFare = activeBooking?.EstimatedFare,
+                    DropAddress = activeBooking?.DropAddress,
+                    GoodsType = activeBooking?.GoodsType,
+                    DailyEarnings = driverDailyEarnings,
                 });
             }
 
@@ -452,22 +499,70 @@ namespace satguruApp.Service.Services
             if (transporter == null) return new List<DriverViewModel>();
 
             var drivers = await (from dvr in _db.Drivers
-                                join userInfo in _db.UserInformations on dvr.UserId equals userInfo.UserId
-                                where dvr.TransporterId == transporter.Id && dvr.IsDeleted != true
-                                select new { dvr, userInfo }).ToListAsync();
+                                 join userInfo in _db.UserInformations on dvr.UserId equals userInfo.UserId
+                                 where dvr.TransporterId == transporter.Id && dvr.IsDeleted != true
+                                 select new { dvr, userInfo }).ToListAsync();
 
-            return drivers.Select(x => new DriverViewModel
-            {
-                Id = x.dvr.Id,
-                Name = x.dvr.Name,
-                Phone = x.dvr.Phone,
-                Mobile = !string.IsNullOrEmpty(x.dvr.Phone) ? long.Parse(new string(x.dvr.Phone.Where(char.IsDigit).Take(15).ToArray()) == "" ? "0" : new string(x.dvr.Phone.Where(char.IsDigit).Take(15).ToArray())) : 0,
-                LicenseNumber = x.dvr.LicenseNumber,
-                LicenseExpiry = x.dvr.LicenseExpiry,
-                ProfilePic = x.dvr.PhotoUrl,
-                ProfileStatus = x.dvr.ProfileStatus,
-                UserId = x.dvr.UserId,
-                IsOnline = x.userInfo.IsOnline,
+            var driverGuidIds = drivers.Select(x => x.dvr.Id).ToList();
+
+            // Fetch average ratings for all target users
+            var ratingsList = await _db.UserRatings
+                .Where(r => r.Target_User_Id != null && r.IsDeleted != true)
+                .GroupBy(r => r.Target_User_Id)
+                .Select(g => new { UserId = g.Key, AvgScore = g.Average(r => r.Score ?? 0) })
+                .ToDictionaryAsync(x => x.UserId, x => x.AvgScore);
+
+            // Fetch active bookings for these drivers to check "On Ride" status and assigned vehicle
+            var activeBookings = await (from b in _db.Bookings
+                                        join v in _db.Vehicles on b.VehicleId equals v.Id
+                                        where b.DriverId != null 
+                                              && driverGuidIds.Contains(b.DriverId.Value)
+                                              && b.CT_BookingStatus != RideStatus.RideCompleted 
+                                              && b.CT_BookingStatus != RideStatus.Cancelled
+                                              && b.IsDeleted != true
+                                        select new { b.DriverId, b.Id, v.VehicleName, v.VehicleNumber }).ToListAsync();
+
+            var activeBookingsDict = activeBookings
+                .GroupBy(x => x.DriverId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            return drivers.Select(x => {
+                var rating = 5.0; // Default
+                if (Guid.TryParse(x.dvr.UserId, out var driverUserGuid))
+                {
+                    if (ratingsList.TryGetValue(driverUserGuid, out var avg))
+                    {
+                        rating = (double)avg;
+                    }
+                }
+
+                activeBookingsDict.TryGetValue(x.dvr.Id, out var activeRide);
+                var hasActiveRide = activeRide != null;
+
+                var rideStatusStr = "Offline";
+                if (x.userInfo.IsOnline == true)
+                {
+                    rideStatusStr = hasActiveRide ? "On Ride" : "Available";
+                }
+
+                return new DriverViewModel
+                {
+                    Id = x.dvr.Id,
+                    Name = x.dvr.Name,
+                    Phone = x.dvr.Phone,
+                    Mobile = !string.IsNullOrEmpty(x.dvr.Phone) ? long.Parse(new string(x.dvr.Phone.Where(char.IsDigit).Take(15).ToArray()) == "" ? "0" : new string(x.dvr.Phone.Where(char.IsDigit).Take(15).ToArray())) : 0,
+                    LicenseNumber = x.dvr.LicenseNumber,
+                    LicenseExpiry = x.dvr.LicenseExpiry,
+                    ProfilePic = x.dvr.PhotoUrl,
+                    ProfileStatus = x.dvr.ProfileStatus,
+                    UserId = x.dvr.UserId,
+                    IsOnline = x.userInfo.IsOnline,
+                    VehicleName = activeRide?.VehicleName,
+                    VehicleNumber = activeRide?.VehicleNumber,
+                    DriverRating = Math.Round(rating, 1),
+                    RideStatus = rideStatusStr,
+                    ActiveBookingId = activeRide?.Id
+                };
             }).ToList();
         }
 

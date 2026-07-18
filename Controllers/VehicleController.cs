@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using satguruApp.DLL.Models;
 using satguruApp.Service.Services.Interfaces;
@@ -14,10 +16,12 @@ namespace navgatix.Controllers
     {
         private readonly IVehicleService _vehicleService;
         private readonly IBookingService _bookingService;
-        public VehicleController(IVehicleService vehicleService, IBookingService bookingService)
+        private readonly SatguruDBContext _db;
+        public VehicleController(IVehicleService vehicleService, IBookingService bookingService, SatguruDBContext db)
         {
             _vehicleService = vehicleService;
             _bookingService = bookingService;
+            _db = db;
         }
         [AllowAnonymous]
         [HttpPost("vehicleRegistration")]
@@ -140,6 +144,61 @@ namespace navgatix.Controllers
         public async Task<IActionResult> GetTrackingSnapshot(long bookingId)
         {
             return Ok(await _vehicleService.GetTrackingSnapshotAsync(bookingId));
+        }
+
+        [HttpPost("rateDriver")]
+        [AllowAnonymous]
+        public async Task<IActionResult> RateDriver([FromQuery] string customerUserId, [FromQuery] string driverUserId, [FromQuery] long bookingId, [FromQuery] decimal score, [FromQuery] string comment)
+        {
+            if (score < 1 || score > 5)
+            {
+                return BadRequest("Score must be between 1 and 5.");
+            }
+
+            var parsedCustomer = Guid.Parse(customerUserId);
+            var parsedDriver = Guid.Parse(driverUserId);
+
+            var existingRating = await _db.UserRatings.FirstOrDefaultAsync(r => r.Booking_Id == bookingId && r.User_Id == parsedCustomer && r.IsDeleted != true);
+            if (existingRating != null)
+            {
+                existingRating.Score = score;
+                existingRating.Comment = comment;
+                _db.UserRatings.Update(existingRating);
+            }
+            else
+            {
+                var newRating = new UserRating
+                {
+                    User_Id = parsedCustomer,
+                    Target_User_Id = parsedDriver,
+                    Booking_Id = bookingId,
+                    Score = score,
+                    Comment = comment,
+                    IsDeleted = false
+                };
+                _db.UserRatings.Add(newRating);
+            }
+
+            await _db.SaveChangesAsync();
+            return Ok(new { message = "Rating submitted successfully." });
+        }
+
+        [HttpGet("driverAverageRating/{driverUserId}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetDriverAverageRating(string driverUserId)
+        {
+            var parsedDriver = Guid.Parse(driverUserId);
+            var ratings = await _db.UserRatings
+                .Where(r => r.Target_User_Id == parsedDriver && r.IsDeleted != true)
+                .ToListAsync();
+
+            if (!ratings.Any())
+            {
+                return Ok(new { averageRating = 0.0, totalRatings = 0 });
+            }
+
+            var avg = ratings.Average(r => r.Score ?? 0);
+            return Ok(new { averageRating = Math.Round(avg, 1), totalRatings = ratings.Count });
         }
     }
 }

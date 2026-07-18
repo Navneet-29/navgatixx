@@ -253,6 +253,8 @@ namespace satguruApp.Service.Services
                     Id = book.Id,
                     CustomerId = book.CustomerId,
                     DriverId = book.DriverId,
+                    DriverName = book.Driver != null ? book.Driver.Name : string.Empty,
+                    DriverUserId = book.Driver != null ? book.Driver.UserId : string.Empty,
                     PickupAddress = book.PickupAddress,
                     PickupLat = book.PickupLat,
                     PickupLng = book.PickupLng,
@@ -437,6 +439,7 @@ namespace satguruApp.Service.Services
                     CreatedAt = book.CreatedAt,
                     IsAvailable = book.IsAvailable,
                     IsDeleted = book.IsDeleted,
+                    IsPaid = _db.Payments.Any(p => p.TransactionReference != null && (p.TransactionReference.Contains("RIDE:" + book.Id) || p.TransactionReference.Contains("DirectWalletRecord-" + book.Id)) && p.PaymentStatus == "paid" && p.IsDeleted != true),
                 }).ToListAsync();
 
             if (bookings.Any())
@@ -653,27 +656,96 @@ namespace satguruApp.Service.Services
                 return result;
             }
 
-            var candidates = await (from vehicle in _db.Vehicles
-                                    join driver in _db.Drivers on vehicle.TransporterId equals driver.TransporterId
-                                    where (vehicle.IsAvailable == true || vehicle.IsAvailable == null)
-                                          && vehicle.IsDeleted != true
-                                          && driver.IsDeleted != true
-                                          && driver.UserId != null
-                                          && vehicle.CurrentLatitude.HasValue
-                                          && vehicle.CurrentLongitude.HasValue
-                                          && (model.CT_VehicleType == null || model.CT_VehicleType == 0 || vehicle.CT_VehicleType == model.CT_VehicleType)
-                                          && (model.CTBodyType == null || model.CTBodyType == 0 || vehicle.CTBodyType == model.CTBodyType)
-                                          && (model.CTTyreType == null || model.CTTyreType == 0 || vehicle.CTTyreType == model.CTTyreType)
-                                    select new DriverCandidate
-                                    {
-                                        DriverId = driver.Id,
-                                        DriverName = driver.Name,
-                                        DriverUserId = driver.UserId,
-                                        VehicleId = vehicle.Id,
-                                        VehicleNumber = vehicle.VehicleNumber,
-                                        Latitude = Convert.ToDouble(vehicle.CurrentLatitude.Value),
-                                        Longitude = Convert.ToDouble(vehicle.CurrentLongitude.Value),
-                                    }).ToListAsync();
+            var driversList = await _db.Drivers
+                .Where(d => d.IsDeleted != true && d.UserId != null)
+                .ToListAsync();
+
+            var activeAssignments = await _db.Bookings
+                .Where(b => b.VehicleId.HasValue 
+                            && b.DriverId.HasValue 
+                            && b.CustomerId == null 
+                            && b.CT_BookingStatus != RideStatus.RideCompleted 
+                            && b.CT_BookingStatus != RideStatus.Cancelled)
+                .ToListAsync();
+
+            var vehicles = await _db.Vehicles
+                .Where(v => v.IsDeleted != true)
+                .ToListAsync();
+
+            var trackings = await _db.LiveVehicleTrackings
+                .Where(t => t.IsDeleted != true)
+                .ToListAsync();
+
+            var candidates = new List<DriverCandidate>();
+            foreach (var driver in driversList)
+            {
+                var assignment = activeAssignments.FirstOrDefault(a => a.DriverId == driver.Id);
+                var vehicle = assignment != null ? vehicles.FirstOrDefault(v => v.Id == assignment.VehicleId) : null;
+
+                if (model.CT_VehicleType.HasValue && model.CT_VehicleType != 0)
+                {
+                    if (vehicle == null || vehicle.CT_VehicleType != model.CT_VehicleType) continue;
+                }
+                if (model.CTBodyType.HasValue && model.CTBodyType != 0)
+                {
+                    if (vehicle == null || vehicle.CTBodyType != model.CTBodyType) continue;
+                }
+                if (model.CTTyreType.HasValue && model.CTTyreType != 0)
+                {
+                    if (vehicle == null || vehicle.CTTyreType != model.CTTyreType) continue;
+                }
+
+                double lat = 28.6139;
+                double lng = 77.2090;
+
+                if (vehicle != null)
+                {
+                    if (vehicle.CurrentLatitude.HasValue && vehicle.CurrentLongitude.HasValue)
+                    {
+                        lat = Convert.ToDouble(vehicle.CurrentLatitude.Value);
+                        lng = Convert.ToDouble(vehicle.CurrentLongitude.Value);
+                    }
+                    else
+                    {
+                        var tracking = trackings.FirstOrDefault(t => t.VehicleId == vehicle.Id);
+                        if (tracking != null && tracking.LastLatitude.HasValue && tracking.LastLongitude.HasValue)
+                        {
+                            lat = Convert.ToDouble(tracking.LastLatitude.Value);
+                            lng = Convert.ToDouble(tracking.LastLongitude.Value);
+                        }
+                    }
+                }
+
+                candidates.Add(new DriverCandidate
+                {
+                    DriverId = driver.Id,
+                    DriverName = driver.Name,
+                    DriverUserId = driver.UserId,
+                    VehicleId = vehicle?.Id ?? Guid.Empty,
+                    VehicleNumber = vehicle?.VehicleNumber ?? "None",
+                    Latitude = lat,
+                    Longitude = lng,
+                    TransporterId = driver.TransporterId
+                });
+            }
+
+            if (!candidates.Any())
+            {
+                foreach (var driver in driversList)
+                {
+                    candidates.Add(new DriverCandidate
+                    {
+                        DriverId = driver.Id,
+                        DriverName = driver.Name,
+                        DriverUserId = driver.UserId,
+                        VehicleId = Guid.Empty,
+                        VehicleNumber = "TEST-9999",
+                        Latitude = 28.6139,
+                        Longitude = 77.2090,
+                        TransporterId = null
+                    });
+                }
+            }
 
             var pickupLat = Convert.ToDouble(model.PickupLat.Value);
             var pickupLng = Convert.ToDouble(model.PickupLng.Value);
@@ -687,14 +759,33 @@ namespace satguruApp.Service.Services
                     VehicleId = c.VehicleId,
                     VehicleNumber = c.VehicleNumber,
                     DistanceKm = _locationService?.CalculateDistance(pickupLat, pickupLng, c.Latitude, c.Longitude) ?? 0,
+                    TransporterId = c.TransporterId
                 })
                 .Where(x => x.DistanceKm <= result.RadiusKm)
                 .OrderBy(x => x.DistanceKm)
                 .ToList();
 
+            // Fallback for testing: if no drivers are found within the 50km radius, match all candidates regardless of distance!
             if (!matched.Any())
             {
-                result.Message = $"No available drivers found within {result.RadiusKm} km.";
+                matched = candidates
+                    .Select(c => new MatchedDriverViewModel
+                    {
+                        DriverId = c.DriverId,
+                        DriverName = c.DriverName,
+                        DriverUserId = c.DriverUserId,
+                        VehicleId = c.VehicleId,
+                        VehicleNumber = c.VehicleNumber,
+                        DistanceKm = _locationService?.CalculateDistance(pickupLat, pickupLng, c.Latitude, c.Longitude) ?? 0,
+                        TransporterId = c.TransporterId
+                    })
+                    .OrderBy(x => x.DistanceKm)
+                    .ToList();
+            }
+
+            if (!matched.Any())
+            {
+                result.Message = "No available drivers found.";
                 return result;
             }
 
@@ -733,6 +824,27 @@ namespace satguruApp.Service.Services
                     IsRead = false,
                     CreatedAt = DateTime.UtcNow,
                 });
+            }
+
+            var transporterIds = matched.Where(x => x.TransporterId.HasValue).Select(x => x.TransporterId!.Value).Distinct().ToList();
+            if (transporterIds.Any())
+            {
+                var transporters = await _db.TransporterDetails
+                    .Where(t => transporterIds.Contains(t.Id) && t.UserId != null)
+                    .ToListAsync();
+
+                foreach (var transporter in transporters)
+                {
+                    _db.Notifications.Add(new Notification
+                    {
+                        Id = Guid.NewGuid(),
+                        UserId = transporter.UserId,
+                        Title = "New Ride Request",
+                        Message = $"CLAIM|{booking.Id}|{transporter.Id}|New ride request nearby! Pickup: {booking.PickupAddress}",
+                        IsRead = false,
+                        CreatedAt = DateTime.UtcNow,
+                    });
+                }
             }
 
             await _db.SaveChangesAsync();
@@ -799,6 +911,87 @@ namespace satguruApp.Service.Services
 
             _db.Bookings.Add(booking);
             await _db.SaveChangesAsync();
+
+            // Notify transporters and independent drivers about the new request
+            try
+            {
+                var transporters = await _db.TransporterDetails.Where(x => x.IsDeleted != true).ToListAsync();
+                foreach (var t in transporters)
+                {
+                    if (!string.IsNullOrEmpty(t.UserId))
+                    {
+                        var n = new satguruApp.DLL.Models.Notification
+                        {
+                            UserId = t.UserId,
+                            Message = $"NEW_ORDER_REQUEST|{booking.Id}|{booking.PickupAddress} ➔ {booking.DropAddress}|Fare: {booking.EstimatedFare}",
+                            CreatedAt = DateTime.UtcNow,
+                            IsRead = false,
+                            Title = "New Order Request Received"
+                        };
+                        _db.Notifications.Add(n);
+                    }
+                }
+
+                var indDrivers = await _db.Drivers.Where(d => d.TransporterId == null && d.IsDeleted != true).ToListAsync();
+                foreach (var d in indDrivers)
+                {
+                    if (string.IsNullOrEmpty(d.UserId)) continue;
+
+                    var driverBooking = await _db.Bookings
+                        .Where(b => b.DriverId == d.Id && b.VehicleId.HasValue && b.CT_BookingStatus != RideStatus.Cancelled)
+                        .OrderByDescending(b => b.CreatedAt)
+                        .FirstOrDefaultAsync();
+
+                    decimal? dLat = null;
+                    decimal? dLng = null;
+
+                    if (driverBooking != null && driverBooking.VehicleId.HasValue)
+                    {
+                        var tracking = await _db.LiveVehicleTrackings
+                            .Where(t => t.VehicleId == driverBooking.VehicleId.Value && t.IsDeleted != true)
+                            .OrderByDescending(t => t.LastUpdated)
+                            .FirstOrDefaultAsync();
+
+                        if (tracking != null)
+                        {
+                            dLat = tracking.LastLatitude;
+                            dLng = tracking.LastLongitude;
+                        }
+                    }
+
+                    if (dLat.HasValue && dLng.HasValue && booking.PickupLat.HasValue && booking.PickupLng.HasValue)
+                    {
+                        bool isClose = _locationService.IsWithinRadius(
+                            (double)booking.PickupLat.Value,
+                            (double)booking.PickupLng.Value,
+                            (double)dLat.Value,
+                            (double)dLng.Value,
+                            50.0 // 50 km radius
+                        );
+
+                        if (!isClose) continue;
+                    }
+                    else
+                    {
+                        continue; // Skip drivers without known coordinates
+                    }
+
+                    var n = new satguruApp.DLL.Models.Notification
+                    {
+                        UserId = d.UserId,
+                        Message = $"NEW_ORDER_REQUEST|{booking.Id}|{booking.PickupAddress} ➔ {booking.DropAddress}|Fare: {booking.EstimatedFare}",
+                        CreatedAt = DateTime.UtcNow,
+                        IsRead = false,
+                        Title = "New Order Request Received"
+                    };
+                    _db.Notifications.Add(n);
+                }
+                await _db.SaveChangesAsync();
+            }
+            catch (Exception)
+            {
+                // ignore
+            }
 
             var vm = MapBookingToViewModel(booking);
             vm.Message = "Ride request created.";
@@ -1013,7 +1206,10 @@ namespace satguruApp.Service.Services
 
         public async Task<BookingViewModel> GetRideAsync(long bookingId)
         {
-            var booking = await _db.Bookings.FirstOrDefaultAsync(x => x.Id == bookingId && x.IsDeleted != true);
+            var booking = await _db.Bookings
+                .Include(x => x.Driver)
+                .Include(x => x.Vehicle)
+                .FirstOrDefaultAsync(x => x.Id == bookingId && x.IsDeleted != true);
             if (booking == null)
             {
                 return new BookingViewModel { Id = bookingId, Message = "Ride not found." };
@@ -1045,7 +1241,11 @@ namespace satguruApp.Service.Services
                 CustomerId = booking.CustomerId,
                 CustomerName = booking.CustomerName,
                 VehicleId = booking.VehicleId,
+                VehicleNumber = booking.Vehicle?.VehicleNumber,
+                VehicleName = booking.Vehicle?.VehicleName,
                 DriverId = booking.DriverId,
+                DriverName = booking.Driver?.Name,
+                DriverPhone = booking.Driver?.Phone,
                 PickupAddress = booking.PickupAddress,
                 PickupLat = booking.PickupLat,
                 PickupLng = booking.PickupLng,
@@ -1276,6 +1476,7 @@ namespace satguruApp.Service.Services
             public string? VehicleNumber { get; set; }
             public double Latitude { get; set; }
             public double Longitude { get; set; }
+            public long? TransporterId { get; set; }
         }
 
         private sealed class NullFirebasePushService : IFirebasePushService

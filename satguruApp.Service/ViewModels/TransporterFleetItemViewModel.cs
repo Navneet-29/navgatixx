@@ -27,5 +27,10 @@ namespace satguruApp.Service.ViewModels
         public decimal? Longitude { get; set; }
         public DateTime? LiveUpdatedAt { get; set; }
         public string LiveStatus { get; set; }
+
+        public decimal? EstimatedFare { get; set; }
+        public string DropAddress { get; set; }
+        public string GoodsType { get; set; }
+        public decimal DailyEarnings { get; set; }
     }
 }

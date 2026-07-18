@@ -11,5 +11,12 @@ namespace satguruApp.Service.ViewModels
         public int PendingApprovals { get; set; }
         public decimal TotalEarnings { get; set; }
         public int TotalRides { get; set; }
+
+        public decimal TodaysEarnings { get; set; }
+        public int TodaysShipments { get; set; }
+        public int ActiveShipments { get; set; }
+        public int OnlineDrivers { get; set; }
+        public int OfflineDrivers { get; set; }
+        public int PendingDriverRequests { get; set; }
     }
 }

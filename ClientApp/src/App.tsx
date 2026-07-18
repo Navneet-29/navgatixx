@@ -34,9 +34,9 @@ function App() {
 
           {/* Dashboards (often have their own sidebar/navbar) */}
           <Route path="/transporter-dashboard" element={<TransporterDashboard />} />
-          <Route path="/driver-dashboard" element={<><Navbar /><DriverDashboard /></>} />
-          <Route path="/customer-dashboard" element={<><Navbar /><CustomerDashboard /></>} />
-          <Route path="/customer-portal" element={<><Navbar /><CustomerDashboard /></>} />
+          <Route path="/driver-dashboard" element={<DriverDashboard />} />
+          <Route path="/customer-dashboard" element={<CustomerDashboard />} />
+          <Route path="/customer-portal" element={<CustomerDashboard />} />
 
           {/* Catch all redirect to home */}
           <Route path="*" element={<Navigate to="/" replace />} />

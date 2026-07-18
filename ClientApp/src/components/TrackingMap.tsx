@@ -16,13 +16,6 @@ let DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-const TruckIcon = L.divIcon({
-  html: `<div style="font-size: 24px;">🚚</div>`,
-  className: 'truck-marker',
-  iconSize: [30, 30],
-  iconAnchor: [15, 15]
-});
-
 interface TrackingMapProps {
   bookingId: number;
   pickupLat: number;
@@ -30,6 +23,18 @@ interface TrackingMapProps {
   dropLat: number;
   dropLng: number;
 }
+
+const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371; // Radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+};
 
 const ZoomHandler = ({ location }: { location: { latitude: number; longitude: number } | null }) => {
   const map = useMap();
@@ -43,7 +48,46 @@ const ZoomHandler = ({ location }: { location: { latitude: number; longitude: nu
 
 const TrackingMap: React.FC<TrackingMapProps> = ({ bookingId, pickupLat, pickupLng, dropLat, dropLng }) => {
   const { driverLocation } = useSignalR(bookingId);
+  const [animatedLocation, setAnimatedLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [route, setRoute] = useState<[number, number][]>([]);
+
+  // Position interpolation for smooth movement transitions
+  useEffect(() => {
+    if (!driverLocation) return;
+    if (!animatedLocation) {
+      setAnimatedLocation(driverLocation);
+      return;
+    }
+
+    const startLat = animatedLocation.latitude;
+    const startLng = animatedLocation.longitude;
+    const endLat = driverLocation.latitude;
+    const endLng = driverLocation.longitude;
+
+    const duration = 1000; // interpolate over 1 second
+    const startTime = performance.now();
+    let animationFrameId: number;
+
+    const animate = (currentTime: number) => {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      const currentLat = startLat + (endLat - startLat) * progress;
+      const currentLng = startLng + (endLng - startLng) * progress;
+
+      setAnimatedLocation({ latitude: currentLat, longitude: currentLng });
+
+      if (progress < 1) {
+        animationFrameId = requestAnimationFrame(animate);
+      }
+    };
+
+    animationFrameId = requestAnimationFrame(animate);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [driverLocation]);
 
   useEffect(() => {
     const fetchRoute = async () => {
@@ -62,8 +106,33 @@ const TrackingMap: React.FC<TrackingMapProps> = ({ bookingId, pickupLat, pickupL
     fetchRoute();
   }, [pickupLat, pickupLng, dropLat, dropLng]);
 
+  // Calculate distance between driver and customer pickup location
+  const distanceToPickup = animatedLocation
+    ? calculateDistance(animatedLocation.latitude, animatedLocation.longitude, pickupLat, pickupLng)
+    : null;
+
+  const isNear = distanceToPickup !== null && distanceToPickup <= 0.5; // True if within 500 meters
+
+  // Scale up driver truck icon size and add pulsing rings when driver comes near customer
+  const DynamicTruckIcon = L.divIcon({
+    html: `<div class="relative flex items-center justify-center" style="width: 100%; height: 100%;">
+      ${isNear ? `<div class="absolute rounded-full bg-rose-500/25 border-2 border-rose-500 animate-ping" style="width: 56px; height: 56px;"></div>` : ''}
+      <div style="font-size: ${isNear ? '40px' : '26px'}; transition: font-size 0.4s ease-out-in;">🚚</div>
+    </div>`,
+    className: 'custom-truck-marker',
+    iconSize: isNear ? [56, 56] : [32, 32],
+    iconAnchor: isNear ? [28, 28] : [16, 16]
+  });
+
   return (
-    <div className="h-[400px] w-full rounded-xl overflow-hidden shadow-lg border border-slate-200">
+    <div className="relative h-[400px] w-full rounded-xl overflow-hidden shadow-lg border border-slate-200">
+      {/* Alert Notification Toast when Driver is near */}
+      {isNear && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] w-[90%] max-w-sm rounded-2xl bg-amber-500 px-5 py-3 text-white text-center font-bold text-sm shadow-xl shadow-amber-500/30 flex items-center justify-center gap-2 border border-amber-400 animate-bounce">
+          🔔 Driver is near your location!
+        </div>
+      )}
+
       <MapContainer 
         center={[pickupLat, pickupLng]} 
         zoom={13} 
@@ -96,14 +165,14 @@ const TrackingMap: React.FC<TrackingMapProps> = ({ bookingId, pickupLat, pickupL
           />
         )}
 
-        {/* Driver Marker */}
-        {driverLocation && (
-          <Marker position={[driverLocation.latitude, driverLocation.longitude]} icon={TruckIcon}>
+        {/* Dynamic Smooth Driver Marker */}
+        {animatedLocation && (
+          <Marker position={[animatedLocation.latitude, animatedLocation.longitude]} icon={DynamicTruckIcon}>
             <Popup>Driver is here</Popup>
           </Marker>
         )}
 
-        <ZoomHandler location={driverLocation} />
+        <ZoomHandler location={animatedLocation} />
       </MapContainer>
     </div>
   );

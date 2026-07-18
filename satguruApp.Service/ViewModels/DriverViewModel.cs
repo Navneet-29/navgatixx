@@ -59,6 +59,9 @@ namespace satguruApp.Service.ViewModels
         public string? Pincode { get; set; }
         public string? BankAccountNumber { get; set; }
         public string? IFSCCode { get; set; }
+        public double? DriverRating { get; set; }
+        public string? RideStatus { get; set; }
+        public long? ActiveBookingId { get; set; }
     }
     public class TransporterViewModel : DriverViewModel
     {

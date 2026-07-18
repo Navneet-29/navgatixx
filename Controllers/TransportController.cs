@@ -3,6 +3,11 @@ using Microsoft.AspNetCore.Mvc;
 using satguruApp.Service.Services.Interfaces;
 using satguruApp.Service.ViewModels;
 using System.Threading.Tasks;
+using System;
+using System.Linq;
+using System.Collections.Generic;
+using Microsoft.EntityFrameworkCore;
+using satguruApp.DLL.Models;
 
 namespace navgatix.Controllers
 {
@@ -11,10 +16,12 @@ namespace navgatix.Controllers
     public class TransportController : ControllerBase
     {
         private readonly ITransportService _transportService;
+        private readonly SatguruDBContext _db;
 
-        public TransportController(ITransportService transportService)
+        public TransportController(ITransportService transportService, SatguruDBContext db)
         {
             _transportService = transportService;
+            _db = db;
         }
 
         [HttpGet("getDashboardSummary")]
@@ -69,6 +76,704 @@ namespace navgatix.Controllers
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
             return Ok(await _transportService.GetTransporterEarningsAsync(userId));
+        }
+
+        [HttpPost("sendJoinRequest")]
+        public async Task<IActionResult> SendJoinRequest([FromQuery] string driverUserId, [FromQuery] string transporterEmail)
+        {
+            if (string.IsNullOrEmpty(driverUserId) || string.IsNullOrEmpty(transporterEmail))
+                return BadRequest("driverUserId and transporterEmail are required.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver profile not found.");
+
+            if (driver.TransporterId.HasValue)
+                return BadRequest("Driver is already linked to a transporter.");
+
+            var transporterUser = await _db.Users.FirstOrDefaultAsync(u => u.Email == transporterEmail);
+            if (transporterUser == null) return NotFound("Transporter not found with this email.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUser.Id);
+            if (transporter == null) return NotFound("Transporter details not found.");
+
+            var payload = $"JOIN|{driver.Id}|{transporterUser.Email}|{driver.Name}";
+            var exists = await _db.Notifications.AnyAsync(n => n.UserId == transporterUser.Id && n.Message == payload && n.IsRead != true);
+            if (exists) return BadRequest("A pending join request is already sent to this transporter.");
+
+            var notification = new Notification
+            {
+                Id = Guid.NewGuid(),
+                UserId = transporterUser.Id,
+                Title = $"Join Request: {driver.Name}",
+                Message = payload,
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _db.Notifications.Add(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Join request sent successfully." });
+        }
+
+        [HttpPost("sendInvitation")]
+        public async Task<IActionResult> SendInvitation([FromQuery] string transporterUserId, [FromQuery] string driverEmail)
+        {
+            if (string.IsNullOrEmpty(transporterUserId) || string.IsNullOrEmpty(driverEmail))
+                return BadRequest("transporterUserId and driverEmail are required.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
+            if (transporter == null) return NotFound("Transporter profile not found.");
+
+            var driverUser = await _db.Users.FirstOrDefaultAsync(u => u.Email == driverEmail);
+            if (driverUser == null) return NotFound("Driver not found with this email.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUser.Id && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver details not found.");
+
+            if (driver.TransporterId.HasValue)
+                return BadRequest("Driver is already linked to a transporter.");
+
+            var transporterName = transporter.CompanyName ?? "Transporter";
+            var payload = $"INVITE|{transporter.Id}|{driverUser.Email}|{transporterName}";
+
+            var exists = await _db.Notifications.AnyAsync(n => n.UserId == driverUser.Id && n.Message == payload && n.IsRead != true);
+            if (exists) return BadRequest("An invitation has already been sent to this driver.");
+
+            var notification = new Notification
+            {
+                Id = Guid.NewGuid(),
+                UserId = driverUser.Id,
+                Title = $"Invitation: {transporterName}",
+                Message = payload,
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _db.Notifications.Add(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Invitation sent successfully." });
+        }
+
+        [HttpPost("sendLeaveRequest")]
+        public async Task<IActionResult> SendLeaveRequest([FromQuery] string driverUserId)
+        {
+            if (string.IsNullOrEmpty(driverUserId)) return BadRequest("driverUserId is required.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver details not found.");
+
+            if (!driver.TransporterId.HasValue) return BadRequest("Driver is not linked to any transporter.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value);
+            if (transporter == null) return NotFound("Transporter not found.");
+
+            var payload = $"LEAVE|{driver.Id}|{driver.Phone}|{driver.Name}";
+
+            var exists = await _db.Notifications.AnyAsync(n => n.UserId == transporter.UserId && n.Message == payload && n.IsRead != true);
+            if (exists) return BadRequest("Leave request is already pending approval.");
+
+            var notification = new Notification
+            {
+                Id = Guid.NewGuid(),
+                UserId = transporter.UserId,
+                Title = $"Leave Request: {driver.Name}",
+                Message = payload,
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _db.Notifications.Add(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Leave request sent to transporter successfully." });
+        }
+
+        [HttpPost("acceptRequest")]
+        public async Task<IActionResult> AcceptRequest([FromQuery] Guid notificationId)
+        {
+            var notification = await _db.Notifications.FirstOrDefaultAsync(n => n.Id == notificationId);
+            if (notification == null) return NotFound("Request notification not found.");
+
+            var parts = notification.Message.Split('|');
+            if (parts.Length < 4) return BadRequest("Invalid request message payload.");
+
+            var type = parts[0];
+            if (type == "JOIN")
+            {
+                var driverId = Guid.Parse(parts[1]);
+                var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverId);
+                if (driver == null) return NotFound("Driver not found.");
+
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == notification.UserId);
+                if (transporter == null) return NotFound("Transporter not found.");
+
+                driver.TransporterId = transporter.Id;
+                _db.Drivers.Update(driver);
+
+                var successNotification = new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = driver.UserId,
+                    Title = "Join Request Accepted",
+                    Message = $"Your join request to {transporter.CompanyName} was accepted.",
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _db.Notifications.Add(successNotification);
+            }
+            else if (type == "INVITE")
+            {
+                var transporterId = long.Parse(parts[1]);
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == transporterId);
+                if (transporter == null) return NotFound("Transporter not found.");
+
+                var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == notification.UserId);
+                if (driver == null) return NotFound("Driver not found.");
+
+                driver.TransporterId = transporter.Id;
+                _db.Drivers.Update(driver);
+
+                var successNotification = new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = transporter.UserId,
+                    Title = "Invitation Accepted",
+                    Message = $"Driver {driver.Name} accepted your invitation.",
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _db.Notifications.Add(successNotification);
+            }
+
+            notification.IsRead = true;
+            _db.Notifications.Update(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Request accepted successfully." });
+        }
+
+        [HttpPost("rejectRequest")]
+        public async Task<IActionResult> RejectRequest([FromQuery] Guid notificationId)
+        {
+            var notification = await _db.Notifications.FirstOrDefaultAsync(n => n.Id == notificationId);
+            if (notification == null) return NotFound("Request notification not found.");
+
+            var parts = notification.Message.Split('|');
+            if (parts.Length >= 4)
+            {
+                var type = parts[0];
+                if (type == "JOIN")
+                {
+                    var driverId = Guid.Parse(parts[1]);
+                    var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverId);
+                    if (driver != null)
+                    {
+                        var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == notification.UserId);
+                        var transporterName = transporter?.CompanyName ?? "Transporter";
+                        var rejectNotification = new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            UserId = driver.UserId,
+                            Title = "Join Request Declined",
+                            Message = $"Your join request to {transporterName} was declined.",
+                            IsRead = false,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _db.Notifications.Add(rejectNotification);
+                    }
+                }
+                else if (type == "INVITE")
+                {
+                    var transporterId = long.Parse(parts[1]);
+                    var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == transporterId);
+                    if (transporter != null)
+                    {
+                        var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == notification.UserId);
+                        var driverName = driver?.Name ?? "A driver";
+                        var rejectNotification = new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            UserId = transporter.UserId,
+                            Title = "Invitation Declined",
+                            Message = $"{driverName} declined your invitation.",
+                            IsRead = false,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _db.Notifications.Add(rejectNotification);
+                    }
+                }
+            }
+
+            notification.IsRead = true;
+            _db.Notifications.Update(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Request declined successfully." });
+        }
+
+        [HttpPost("approveLeaveRequest")]
+        public async Task<IActionResult> ApproveLeaveRequest([FromQuery] Guid notificationId)
+        {
+            var notification = await _db.Notifications.FirstOrDefaultAsync(n => n.Id == notificationId);
+            if (notification == null) return NotFound("Leave request not found.");
+
+            var parts = notification.Message.Split('|');
+            if (parts.Length < 4 || parts[0] != "LEAVE") return BadRequest("Invalid request message payload.");
+
+            var driverId = Guid.Parse(parts[1]);
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverId);
+            if (driver == null) return NotFound("Driver not found.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == notification.UserId);
+            var transporterName = transporter?.CompanyName ?? "Transporter";
+
+            driver.TransporterId = null;
+            _db.Drivers.Update(driver);
+
+            var releaseNotification = new Notification
+            {
+                Id = Guid.NewGuid(),
+                UserId = driver.UserId,
+                Title = "Released from Fleet",
+                Message = $"You have been released from {transporterName}'s fleet and are now working independently.",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            };
+            _db.Notifications.Add(releaseNotification);
+
+            notification.IsRead = true;
+            _db.Notifications.Update(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Leave request approved. Driver has been released." });
+        }
+
+        [HttpPost("removeDriver")]
+        public async Task<IActionResult> RemoveDriver([FromQuery] string transporterUserId, [FromQuery] string driverId)
+        {
+            if (string.IsNullOrEmpty(transporterUserId) || string.IsNullOrEmpty(driverId))
+                return BadRequest("transporterUserId and driverId are required.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
+            if (transporter == null) return NotFound("Transporter profile not found.");
+
+            var driverGuid = Guid.Parse(driverId);
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverGuid && d.TransporterId == transporter.Id);
+            if (driver == null) return NotFound("Driver not found in your fleet.");
+
+            driver.TransporterId = null;
+            _db.Drivers.Update(driver);
+
+            var notification = new Notification
+            {
+                Id = Guid.NewGuid(),
+                UserId = driver.UserId,
+                Title = "Removed from Fleet",
+                Message = $"{transporter.CompanyName ?? "Your transporter"} has removed you from their fleet.",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            };
+            _db.Notifications.Add(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Driver removed successfully from fleet." });
+        }
+
+        [HttpGet("getRelationshipNotifications")]
+        public async Task<IActionResult> GetRelationshipNotifications([FromQuery] string userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
+
+            var notifications = await _db.Notifications
+                .Where(n => n.UserId == userId && n.IsRead != true)
+                .OrderByDescending(n => n.CreatedAt)
+                .ToListAsync();
+
+            var relationshipNotifications = notifications.Where(n =>
+                n.Message.StartsWith("JOIN|") ||
+                n.Message.StartsWith("INVITE|") ||
+                n.Message.StartsWith("LEAVE|") ||
+                n.Message.StartsWith("SOS|") ||
+                n.Message.StartsWith("DRIVER_ACCEPT_ORDER|") ||
+                n.Message.StartsWith("VEHICLE_ASSIGN|") ||
+                n.Message.StartsWith("CHAT_MESSAGE|") ||
+                n.Message.StartsWith("CHAT_MESSAGE_DIRECT|")
+            ).ToList();
+
+            return Ok(relationshipNotifications);
+        }
+
+        [HttpGet("getDriverActiveTransporter")]
+        public async Task<IActionResult> GetDriverActiveTransporter([FromQuery] string userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == userId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver not found.");
+
+            if (!driver.TransporterId.HasValue) return Ok(new { isIndependent = true });
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value);
+            if (transporter == null) return Ok(new { isIndependent = true });
+
+            var transporterUser = await _db.Users.FirstOrDefaultAsync(u => u.Id == transporter.UserId);
+
+            return Ok(new {
+                isIndependent = false,
+                transporterId = transporter.Id,
+                transporterUserId = transporter.UserId,
+                companyName = transporter.CompanyName,
+                email = transporterUser?.Email,
+                phone = transporterUser?.PhoneNumber
+            });
+        }
+
+        [HttpGet("getDriverActiveVehicle")]
+        public async Task<IActionResult> GetDriverActiveVehicle([FromQuery] string userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == userId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver not found.");
+
+            var assignment = await _db.Bookings
+                .Where(b => b.DriverId == driver.Id 
+                            && b.VehicleId.HasValue 
+                            && b.CustomerId == null 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
+                .OrderByDescending(b => b.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (assignment == null) return Ok(new { vehicleId = (Guid?)null });
+
+            return Ok(new { vehicleId = assignment.VehicleId });
+        }
+
+        [HttpGet("debugSystemState")]
+        public async Task<IActionResult> DebugSystemState()
+        {
+            var drivers = await _db.Drivers.Select(d => new { d.Id, d.Name, d.UserId, d.TransporterId, d.IsDeleted }).ToListAsync();
+            var vehicles = await _db.Vehicles.Select(v => new { v.Id, v.VehicleNumber, v.VehicleName, v.TransporterId, v.IsAvailable, v.IsDeleted, v.CurrentLatitude, v.CurrentLongitude }).ToListAsync();
+            var trackings = await _db.LiveVehicleTrackings.Select(t => new { t.VehicleId, t.LastLatitude, t.LastLongitude, t.LastUpdated }).ToListAsync();
+            var users = await _db.Users.Select(u => new { u.Id, u.UserName, u.Email }).ToListAsync();
+            var notifications = await _db.Notifications.OrderByDescending(n => n.CreatedAt).Take(20).Select(n => new { n.UserId, n.Title, n.Message, n.CreatedAt }).ToListAsync();
+            var bookings = await _db.Bookings.OrderByDescending(b => b.CreatedAt).Take(10).Select(b => new { b.Id, b.CustomerName, b.DriverId, b.VehicleId, b.CT_BookingStatus, b.PickupAddress }).ToListAsync();
+
+            return Ok(new { drivers, vehicles, trackings, users, notifications, bookings });
+        }
+
+        [HttpGet("getTransporterOutboundInvitations")]
+        public async Task<IActionResult> GetTransporterOutboundInvitations([FromQuery] string userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId);
+            if (transporter == null) return NotFound("Transporter not found.");
+
+            var prefix = $"INVITE|{transporter.Id}|";
+            var notifications = await _db.Notifications
+                .Where(n => n.Message.StartsWith(prefix) && n.IsRead != true)
+                .OrderByDescending(n => n.CreatedAt)
+                .ToListAsync();
+
+            return Ok(notifications);
+        }
+
+        [HttpGet("getDriverOutboundJoinRequests")]
+        public async Task<IActionResult> GetDriverOutboundJoinRequests([FromQuery] string userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == userId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver not found.");
+
+            var prefix = $"JOIN|{driver.Id}|";
+            var notifications = await _db.Notifications
+                .Where(n => n.Message.StartsWith(prefix) && n.IsRead != true)
+                .OrderByDescending(n => n.CreatedAt)
+                .ToListAsync();
+
+            return Ok(notifications);
+        }
+
+        [HttpPost("acceptShipmentAsTransporter")]
+        public async Task<IActionResult> AcceptShipmentAsTransporter([FromQuery] string transporterUserId, [FromQuery] long bookingId)
+        {
+            if (string.IsNullOrEmpty(transporterUserId)) return BadRequest("transporterUserId is required.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
+            if (transporter == null) return NotFound("Transporter not found.");
+
+            var booking = await _db.Bookings.FirstOrDefaultAsync(b => b.Id == bookingId && b.IsDeleted != true);
+            if (booking == null) return NotFound("Booking not found.");
+
+            if (booking.DriverId.HasValue || booking.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RequestForRide)
+            {
+                return BadRequest("Shipment is already assigned.");
+            }
+
+            var claimed = await _db.Notifications.AnyAsync(n => n.Message.StartsWith($"CLAIM|{bookingId}|"));
+            if (claimed)
+            {
+                return BadRequest("Shipment already claimed by another transporter.");
+            }
+
+            var claimMessage = $"CLAIM|{bookingId}|{transporter.Id}";
+            var notification = new satguruApp.DLL.Models.Notification
+            {
+                UserId = transporterUserId,
+                Message = claimMessage,
+                CreatedAt = DateTime.UtcNow,
+                IsRead = false,
+                Title = "Shipment Claimed"
+            };
+
+            _db.Notifications.Add(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Shipment successfully claimed by you. Now assign a driver to complete." });
+        }
+
+        [HttpPost("assignTransporterBookingToDriver")]
+        public async Task<IActionResult> AssignTransporterBookingToDriver([FromQuery] string transporterUserId, [FromQuery] long bookingId, [FromQuery] Guid driverId)
+        {
+            if (string.IsNullOrEmpty(transporterUserId)) return BadRequest("transporterUserId is required.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
+            if (transporter == null) return NotFound("Transporter not found.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver not found.");
+
+            if (driver.TransporterId != transporter.Id)
+            {
+                return BadRequest("Driver does not belong to your transporter fleet.");
+            }
+
+            var booking = await _db.Bookings.FirstOrDefaultAsync(b => b.Id == bookingId && b.IsDeleted != true);
+            if (booking == null) return NotFound("Booking not found.");
+
+            if (booking.DriverId.HasValue)
+            {
+                return BadRequest("Shipment already assigned.");
+            }
+
+            var claimPrefix = $"CLAIM|{bookingId}|{transporter.Id}";
+            var claimed = await _db.Notifications.AnyAsync(n => n.Message.StartsWith(claimPrefix));
+            if (!claimed)
+            {
+                return BadRequest("You must accept/claim the shipment first before assigning a driver.");
+            }
+
+            if (string.IsNullOrEmpty(driver.UserId))
+            {
+                return BadRequest("Driver does not have a user account mapped.");
+            }
+
+            var assignMessage = $"ASSIGN_SHIPMENT|{bookingId}|{transporter.Id}|{transporter.CompanyName}";
+            var notification = new satguruApp.DLL.Models.Notification
+            {
+                UserId = driver.UserId,
+                Message = assignMessage,
+                CreatedAt = DateTime.UtcNow,
+                IsRead = false,
+                Title = "New Shipment Assignment"
+            };
+
+            _db.Notifications.Add(notification);
+
+            if (!string.IsNullOrEmpty(booking.CustomerId))
+            {
+                var cNotif = new satguruApp.DLL.Models.Notification
+                {
+                    UserId = booking.CustomerId,
+                    Message = $"DRIVER_ASSIGNED|{bookingId}|{driver.Name}|{driver.Phone}|{booking.PickupAddress} ➔ {booking.DropAddress}",
+                    CreatedAt = DateTime.UtcNow,
+                    IsRead = false,
+                    Title = "Driver Assigned to Your Order"
+                };
+                _db.Notifications.Add(cNotif);
+            }
+
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Shipment assigned to driver successfully. Awaiting driver acceptance." });
+        }
+
+        [HttpPost("acceptShipmentAsDriver")]
+        public async Task<IActionResult> AcceptShipmentAsDriver([FromQuery] string driverUserId, [FromQuery] long bookingId)
+        {
+            if (string.IsNullOrEmpty(driverUserId)) return BadRequest("driverUserId is required.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver not found.");
+
+            using (var transaction = await _db.Database.BeginTransactionAsync())
+            {
+                try
+                {
+                    var booking = await _db.Bookings.FirstOrDefaultAsync(b => b.Id == bookingId && b.IsDeleted != true);
+                    if (booking == null)
+                    {
+                        return NotFound("Booking not found.");
+                    }
+
+                    if (booking.DriverId.HasValue || booking.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RequestForRide)
+                    {
+                        return BadRequest("Shipment already assigned.");
+                    }
+
+                    var claimPrefix = $"CLAIM|{bookingId}|";
+                    var claimNotif = await _db.Notifications.FirstOrDefaultAsync(n => n.Message.StartsWith(claimPrefix) && n.IsRead != true);
+                    if (claimNotif != null)
+                    {
+                        var parts = claimNotif.Message.Split('|');
+                        var transporterId = long.Parse(parts[2]);
+
+                        if (driver.TransporterId != transporterId)
+                        {
+                            return BadRequest("Shipment claimed by another transporter and not assigned to you.");
+                        }
+
+                        var assignPrefix = $"ASSIGN_SHIPMENT|{bookingId}|{transporterId}|";
+                        var isAssigned = await _db.Notifications.AnyAsync(n => n.UserId == driverUserId && n.Message.StartsWith(assignPrefix) && n.IsRead != true);
+                        if (!isAssigned)
+                        {
+                            return BadRequest("Shipment not assigned to you by your transporter.");
+                        }
+                    }
+                    else
+                    {
+                        if (driver.TransporterId.HasValue)
+                        {
+                        }
+                    }
+
+                    booking.DriverId = driver.Id;
+                    booking.CT_BookingStatus = satguruApp.Service.ViewModels.RideStatus.DriverAssigned;
+                    booking.IsAvailable = false;
+
+                    var driverVehicleBooking = await _db.Bookings
+                        .Where(b => b.DriverId == driver.Id 
+                                    && b.VehicleId.HasValue 
+                                    && b.CustomerId == null 
+                                    && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
+                                    && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
+                        .OrderByDescending(b => b.CreatedAt)
+                        .FirstOrDefaultAsync();
+                    if (driverVehicleBooking != null)
+                    {
+                        booking.VehicleId = driverVehicleBooking.VehicleId;
+                    }
+
+                    // Notify Transporter that driver accepted the assignment
+                    if (driver.TransporterId.HasValue)
+                    {
+                        var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value);
+                        if (transporter != null)
+                        {
+                            var tNotif = new satguruApp.DLL.Models.Notification
+                            {
+                                UserId = transporter.UserId,
+                                Message = $"DRIVER_ACCEPT_ORDER|{booking.Id}|{driver.Name}|{booking.PickupAddress} ➔ {booking.DropAddress}|{booking.EstimatedFare}",
+                                CreatedAt = DateTime.UtcNow,
+                                IsRead = false,
+                                Title = "Driver Accepted Order"
+                            };
+                            _db.Notifications.Add(tNotif);
+                        }
+                    }
+
+                    // Notify Customer that driver is assigned
+                    if (!string.IsNullOrEmpty(booking.CustomerId))
+                    {
+                        var cNotif = new satguruApp.DLL.Models.Notification
+                        {
+                            UserId = booking.CustomerId,
+                            Message = $"DRIVER_ASSIGNED|{booking.Id}|{driver.Name}|{driver.Phone}|{booking.PickupAddress} ➔ {booking.DropAddress}",
+                            CreatedAt = DateTime.UtcNow,
+                            IsRead = false,
+                            Title = "Driver Assigned to Your Order"
+                        };
+                        _db.Notifications.Add(cNotif);
+                    }
+
+                    await _db.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new { message = "Shipment successfully assigned to you!" });
+                }
+                catch (Exception)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, "Error locking the shipment assignment.");
+                }
+            }
+        }
+
+        [HttpPost("sendNotification")]
+        public async Task<IActionResult> SendNotification([FromQuery] string userId, [FromQuery] string message, [FromQuery] string title)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("userId is required.");
+            var notification = new satguruApp.DLL.Models.Notification
+            {
+                UserId = userId,
+                Message = message,
+                CreatedAt = DateTime.UtcNow,
+                IsRead = false,
+                Title = title
+            };
+            _db.Notifications.Add(notification);
+            await _db.SaveChangesAsync();
+            return Ok();
+        }
+
+        [HttpPost("toggleDriverOnlineStatus")]
+        public async Task<IActionResult> ToggleDriverOnlineStatus([FromQuery] Guid? vehicleId, [FromQuery] bool isOnline, [FromQuery] string? driverUserId)
+        {
+            if (!string.IsNullOrEmpty(driverUserId))
+            {
+                var userInfo = await _db.UserInformations.FirstOrDefaultAsync(x => x.UserId != null && x.UserId.ToLower() == driverUserId.ToLower());
+                if (userInfo != null)
+                {
+                    userInfo.IsOnline = isOnline;
+                    _db.UserInformations.Update(userInfo);
+                }
+            }
+
+            if (vehicleId.HasValue && vehicleId.Value != Guid.Empty)
+            {
+                var tracking = await _db.LiveVehicleTrackings.FirstOrDefaultAsync(x => x.VehicleId == vehicleId.Value && x.IsDeleted != true);
+                if (tracking != null)
+                {
+                    if (isOnline)
+                    {
+                        tracking.LastUpdated = DateTime.UtcNow;
+                    }
+                    else
+                    {
+                        tracking.LastUpdated = DateTime.UtcNow.AddMinutes(-30);
+                    }
+                    _db.LiveVehicleTrackings.Update(tracking);
+                }
+                else
+                {
+                    var newTracking = new satguruApp.DLL.Models.LiveVehicleTracking
+                    {
+                        VehicleId = vehicleId.Value,
+                        LastUpdated = isOnline ? DateTime.UtcNow : DateTime.UtcNow.AddMinutes(-30),
+                        LastLatitude = 0,
+                        LastLongitude = 0,
+                        IsDeleted = false
+                    };
+                    _db.LiveVehicleTrackings.Add(newTracking);
+                }
+            }
+
+            await _db.SaveChangesAsync();
+            return Ok();
         }
     }
 }

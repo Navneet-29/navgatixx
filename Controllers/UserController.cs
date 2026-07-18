@@ -12,6 +12,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using static Google.Apis.Auth.OAuth2.Web.AuthorizationCodeWebApp;
+using Microsoft.EntityFrameworkCore;
 
 
 namespace navgatix.Controllers
@@ -26,12 +27,13 @@ namespace navgatix.Controllers
         private readonly ITransportService _transportService;
         private readonly IAppCustormer _appCustormer;
         private readonly IVehicleService _vehicleService;
+        private readonly SatguruDBContext _db;
         private string subPath = @"wwwroot/uploads/profiles/";
         private static readonly string[] Summaries = new[]
       {
         "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
     };
-        public UserController(IUserService userService, IAccountTypeService accountTypeService, IUserInfoService userInfoService, ITransportService transportService, IAppCustormer appCustormer, IVehicleService vehicleService)
+        public UserController(IUserService userService, IAccountTypeService accountTypeService, IUserInfoService userInfoService, ITransportService transportService, IAppCustormer appCustormer, IVehicleService vehicleService, SatguruDBContext db)
         {
             _userService = userService;
             _accountTypeService = accountTypeService;
@@ -39,6 +41,7 @@ namespace navgatix.Controllers
             _transportService = transportService;
             _appCustormer = appCustormer;
             _vehicleService = vehicleService;
+            _db = db;
         }
         // GET: UserController
         [HttpPost]
@@ -167,8 +170,32 @@ namespace navgatix.Controllers
             var userRoles = await _userService.UpdateUserRoleAsync(userRoleVM);
             string subPath = @"~/uploaddocs/";
 
-            var userResult = await _userInfoService.SaveAsync(new UserInfoViewModel { TransporterId = model.TransporterId, UserId = model.UserId, FirstName = model.FirstName, AccountTypeId = model.AccountTypeId, AppUserId = model.AppUserId.GetValueOrDefault(), AccountTypeName = model.AccountTypeName, Company = model.Company, DOB = model.DOB, Email = model.Email, GenderId = model.GenderId, FacebookLink = model.FacebookLink, PhoneNumber = model.PhoneNumber, LastName = model.LastName, LicenseExpiry = model.LicenseExpiry, LicenseNumber = model.LicenseNumber, MiddleName = model.MiddleName, Mobile = model.Mobile, Name = model.Name });
+            var originalTransporterId = model.TransporterId;
+            model.TransporterId = null;
+
+            var userResult = await _userInfoService.SaveAsync(new UserInfoViewModel { TransporterId = null, UserId = model.UserId, FirstName = model.FirstName, AccountTypeId = model.AccountTypeId, AppUserId = model.AppUserId.GetValueOrDefault(), AccountTypeName = model.AccountTypeName, Company = model.Company, DOB = model.DOB, Email = model.Email, GenderId = model.GenderId, FacebookLink = model.FacebookLink, PhoneNumber = model.PhoneNumber, LastName = model.LastName, LicenseExpiry = model.LicenseExpiry, LicenseNumber = model.LicenseNumber, MiddleName = model.MiddleName, Mobile = model.Mobile, Name = model.Name });
             var result = await _transportService.SaveDriverAsync(model);
+
+            if (originalTransporterId.HasValue && originalTransporterId.Value > 0)
+            {
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == originalTransporterId.Value);
+                if (transporter != null)
+                {
+                    var transporterUser = await _db.Users.FirstOrDefaultAsync(u => u.Id == transporter.UserId);
+                    var transporterName = transporter.CompanyName ?? "Transporter";
+                    var message = $"INVITE|{transporter.Id}|{model.Email}|{transporterName}";
+                    var notification = new satguruApp.DLL.Models.Notification
+                    {
+                        UserId = model.UserId,
+                        Message = message,
+                        CreatedAt = DateTime.UtcNow,
+                        IsRead = false
+                    };
+                    _db.Notifications.Add(notification);
+                    await _db.SaveChangesAsync();
+                }
+            }
+
             return Ok(result);
         }
 
@@ -522,6 +549,10 @@ namespace navgatix.Controllers
         public async Task<IActionResult> GetUserDetail(string userId)
         {
             var model = await _userInfoService.GetUserDetail(userId);
+            if (model == null)
+            {
+                return NotFound(new { message = "User not found in the SQL Database." });
+            }
             switch (model.AccountTypeName)
             {
                 case "Driver":
