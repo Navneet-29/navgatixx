@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { 
     Camera, FileText, ShieldCheck, Loader2, Truck, 
-    CreditCard, Building2, Home, Plus, Trash2, Key, Bell, Volume2, Users, Check, Lock, LogOut, User
+    CreditCard, Building2, Home, Plus, Trash2, Key, Bell, Volume2, Users, Check, Lock, LogOut, User, LayoutDashboard, Wallet, Package
 } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import apiClient from '../api/apiClient';
@@ -56,8 +56,11 @@ const ProfilePage = () => {
     
     // Driver / Vehicle Fields
     const [drivingLicenseNumber, setDrivingLicenseNumber] = useState('');
+    const [isVehicleOwner, setIsVehicleOwner] = useState<boolean>(true);
+    const [selectedVehicleCategory, setSelectedVehicleCategory] = useState<'two_wheeler' | 'three_wheeler' | 'truck'>('truck');
     const [vehicleName, setVehicleName] = useState('');
     const [vehicleNumber, setVehicleNumber] = useState('');
+    const [rcNumber, setRcNumber] = useState('');
     const [gstNumber, setGstNumber] = useState('');
     const [ctBodyType, setCtBodyType] = useState<number | ''>('');
     const [ctTyreType, setCtTyreType] = useState<number | ''>('');
@@ -176,10 +179,20 @@ const ProfilePage = () => {
                     if (mappedAddress) setAddress(mappedAddress);
                     if (mappedProfilePic) setProfilePicUrl(mappedProfilePic);
 
+                    const savedBankAcc = resolveFirstDefinedValue(data, ['bankAccountNumber', 'BankAccountNumber']) || '';
+                    const savedIfsc = resolveFirstDefinedValue(data, ['ifscCode', 'IFSCCode']) || '';
+                    setBankDetails({
+                        accountHolderName: `${firstName} ${lastName}`.trim() || 'Madan Kumar',
+                        bankName: 'State Bank of India',
+                        accountNumber: savedBankAcc || '30291048123',
+                        ifscCode: savedIfsc || 'SBIN0001234'
+                    });
+
                     setDrivingLicenseNumber(resolveFirstDefinedValue(data, ['licenseNumber', 'LicenseNumber']) || '');
                     setGstNumber(resolveFirstDefinedValue(data, ['gstNumber', 'GSTNumber', 'gstNo', 'GSTNo']) || '');
                     setVehicleName(resolveFirstDefinedValue(data, ['vehicleName', 'VehicleName', 'name', 'Name']) || '');
                     setVehicleNumber(resolveFirstDefinedValue(data, ['vehicleNumber', 'VehicleNumber']) || '');
+                    setRcNumber(resolveFirstDefinedValue(data, ['rcNumber', 'RCNumber', 'rcNo', 'RCNo']) || '');
 
                     setCtBodyType(
                         parseCommonTypeValue(
@@ -203,6 +216,20 @@ const ProfilePage = () => {
                         
                         const panMatch = description.match(/PAN_URL:([^|\s]+)/);
                         if (panMatch) setPanUrl(panMatch[1]);
+                    }
+
+                    // Check for Transporter-Assigned Vehicle for Driver profiles
+                    try {
+                        const assignedVehRes = await apiClient.get(`/Transport/getDriverAssignedVehicle/${userId}`);
+                        if (assignedVehRes.data?.isAssigned && assignedVehRes.data?.vehicle) {
+                            const v = assignedVehRes.data.vehicle;
+                            setVehicleName(v.vehicleName || 'Fleet Vehicle');
+                            setVehicleNumber(v.registrationNumber || '');
+                            if (v.ctBodyType) setCtBodyType(v.ctBodyType);
+                            if (v.ctTyreType) setCtTyreType(v.ctTyreType);
+                        }
+                    } catch (vehErr) {
+                        console.error('Failed to fetch assigned vehicle for driver profile:', vehErr);
                     }
                 }
             } catch (err) {
@@ -328,9 +355,15 @@ const ProfilePage = () => {
                 if (panFile) formData.append('panCard', panFile);
             }
 
-            if (isDriver) {
+            if (isDriver && isVehicleOwner) {
+                if (!vehicleName.trim() || !vehicleNumber.trim() || !rcNumber.trim()) {
+                    setErrors(['Vehicle Name, Vehicle Plate Number, and Vehicle RC Number are compulsory for Independent Vehicle Owners.']);
+                    setIsSubmitting(false);
+                    return;
+                }
                 formData.append('vehicleName', vehicleName);
                 formData.append('vehicleNumber', vehicleNumber);
+                formData.append('rcNumber', rcNumber);
                 if (ctBodyType) formData.append('ctBodyType', String(ctBodyType));
                 if (ctTyreType) formData.append('ctTyreType', String(ctTyreType));
             }
@@ -581,42 +614,126 @@ const ProfilePage = () => {
                                     </div>
                                 )}
 
-                                {/* Driver Vehicle Setup */}
-                                {isDriver && (
-                                    <div className="space-y-4 p-6 bg-slate-50 rounded-2xl border border-slate-200">
-                                        <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                                            <Truck className="h-5 w-5 text-primary-600" /> Vehicle Details
-                                        </h3>
-                                        <div className="grid md:grid-cols-2 gap-6">
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Vehicle Name *</label>
-                                                <input value={vehicleName} onChange={(e) => setVehicleName(e.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none" placeholder="Tata Ace, Mahindra Bolero, etc." />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Vehicle Plate Number *</label>
-                                                <input value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value.toUpperCase())} maxLength={13} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none uppercase" placeholder="e.g. DL01AB1234" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Body Type</label>
-                                                <select value={ctBodyType} onChange={(e) => setCtBodyType(e.target.value ? Number(e.target.value) : '')} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none">
-                                                    <option value="">Select Body Type</option>
-                                                    {bodyTypes.map((t) => (
-                                                        <option key={t.id} value={t.id}>{t.name}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Vehicle Tyre Type</label>
-                                                <select value={ctTyreType} onChange={(e) => setCtTyreType(e.target.value ? Number(e.target.value) : '')} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none">
-                                                    <option value="">Select Tyre Type</option>
-                                                    {tyreTypes.map((t) => (
-                                                        <option key={t.id} value={t.id}>{t.name}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
+                                 {/* Driver Vehicle Setup & Checkpoint */}
+                                 {isDriver && (
+                                     <div className="space-y-5 p-6 bg-slate-50 rounded-2xl border border-slate-200">
+                                         <div>
+                                             <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 mb-1">
+                                                 <Truck className="h-5 w-5 text-primary-600" /> Vehicle Ownership & Fleet Details
+                                             </h3>
+                                             <p className="text-xs text-slate-500 font-medium">Please specify whether you own your vehicle or drive under a Transporter fleet.</p>
+                                         </div>
+
+                                         {/* Checkpoint Options */}
+                                         <div className="grid sm:grid-cols-2 gap-4">
+                                             <button
+                                                 type="button"
+                                                 onClick={() => setIsVehicleOwner(true)}
+                                                 className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                                                     isVehicleOwner
+                                                         ? 'bg-primary-50/80 border-primary-500 ring-2 ring-primary-500/20 text-slate-900 font-bold'
+                                                         : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                                                 }`}
+                                             >
+                                                 <div className="flex items-center gap-2 mb-1">
+                                                     <span className="text-lg">🚚</span>
+                                                     <span className="text-sm font-extrabold text-slate-900">Independent Vehicle Owner</span>
+                                                 </div>
+                                                 <p className="text-xs text-slate-500 font-normal">I own or operate my vehicle directly.</p>
+                                             </button>
+
+                                             <button
+                                                 type="button"
+                                                 onClick={() => setIsVehicleOwner(false)}
+                                                 className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                                                     !isVehicleOwner
+                                                         ? 'bg-primary-50/80 border-primary-500 ring-2 ring-primary-500/20 text-slate-900 font-bold'
+                                                         : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                                                 }`}
+                                             >
+                                                 <div className="flex items-center gap-2 mb-1">
+                                                     <span className="text-lg">🏢</span>
+                                                     <span className="text-sm font-extrabold text-slate-900">Works Under Transporter</span>
+                                                 </div>
+                                                 <p className="text-xs text-slate-500 font-normal">Vehicles will be assigned by my Transporter.</p>
+                                             </button>
+                                         </div>
+
+                                         {isVehicleOwner ? (
+                                             <div className="space-y-4 pt-3 border-t border-slate-200">
+                                                 {/* Category Selection */}
+                                                 <div>
+                                                     <label className="block text-xs font-bold text-slate-700 mb-2 uppercase tracking-wider">Select Vehicle Category *</label>
+                                                     <div className="grid grid-cols-3 gap-3">
+                                                         {[
+                                                             { key: 'two_wheeler', label: 'Two Wheeler', icon: '🛵' },
+                                                             { key: 'three_wheeler', label: '3-Wheeler Cargo', icon: '🛺' },
+                                                             { key: 'truck', label: 'Truck / Heavy', icon: '🚛' },
+                                                         ].map((cat) => (
+                                                             <button
+                                                                 key={cat.key}
+                                                                 type="button"
+                                                                 onClick={() => setSelectedVehicleCategory(cat.key as any)}
+                                                                 className={`p-3 rounded-xl border text-center transition-all cursor-pointer text-xs font-bold ${
+                                                                     selectedVehicleCategory === cat.key
+                                                                         ? 'bg-white border-primary-600 text-primary-900 shadow-md ring-2 ring-primary-500/20'
+                                                                         : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                                                                 }`}
+                                                             >
+                                                                 <div className="text-xl mb-1">{cat.icon}</div>
+                                                                 {cat.label}
+                                                             </button>
+                                                         ))}
+                                                     </div>
+                                                 </div>
+
+                                                 <div className="grid md:grid-cols-3 gap-4">
+                                                      <div>
+                                                          <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Vehicle Name / Model *</label>
+                                                          <input value={vehicleName} onChange={(e) => setVehicleName(e.target.value)} required className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none text-sm" placeholder="Tata Ace, Mahindra Bolero" />
+                                                      </div>
+                                                      <div>
+                                                          <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Vehicle Plate Number *</label>
+                                                          <input value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value.toUpperCase())} required maxLength={13} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none uppercase text-sm" placeholder="e.g. DL01AB1234" />
+                                                      </div>
+                                                      <div>
+                                                          <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Vehicle RC Number *</label>
+                                                          <input value={rcNumber} onChange={(e) => setRcNumber(e.target.value.toUpperCase())} required className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none uppercase text-sm" placeholder="e.g. RC9876543210" />
+                                                      </div>
+                                                  </div>
+
+                                                 {/* Body & Tyre types are ONLY shown for Truck category */}
+                                                 {selectedVehicleCategory === 'truck' && (
+                                                     <div className="grid md:grid-cols-2 gap-4">
+                                                         <div>
+                                                             <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Body Type (Optional)</label>
+                                                             <select value={ctBodyType} onChange={(e) => setCtBodyType(e.target.value ? Number(e.target.value) : '')} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none text-sm">
+                                                                 <option value="">Select Body Type</option>
+                                                                 {bodyTypes.map((t) => (
+                                                                     <option key={t.id} value={t.id}>{t.name}</option>
+                                                                 ))}
+                                                             </select>
+                                                         </div>
+                                                         <div>
+                                                             <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Vehicle Tyre Type (Optional)</label>
+                                                             <select value={ctTyreType} onChange={(e) => setCtTyreType(e.target.value ? Number(e.target.value) : '')} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 focus:border-primary-500 outline-none text-sm">
+                                                                 <option value="">Select Tyre Type</option>
+                                                                 {tyreTypes.map((t) => (
+                                                                     <option key={t.id} value={t.id}>{t.name}</option>
+                                                                 ))}
+                                                             </select>
+                                                         </div>
+                                                     </div>
+                                                 )}
+                                             </div>
+                                         ) : (
+                                             <div className="p-4 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs font-bold flex items-center gap-2">
+                                                 <span>ℹ️</span>
+                                                 <span>No vehicle registration required now. Fleet vehicles will be assigned directly by your Transporter.</span>
+                                             </div>
+                                         )}
+                                     </div>
+                                 )}
 
                                 <div className="pt-4 border-t">
                                     <button type="submit" disabled={isSubmitting} className="btn-primary w-full bg-primary-600 hover:bg-primary-500 text-white font-extrabold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-primary-600/20 active:scale-[0.98] transition-all cursor-pointer">
@@ -766,9 +883,25 @@ const ProfilePage = () => {
                                                     </div>
                                                 </div>
                                                 <button 
-                                                    onClick={() => {
-                                                        setSuccessMsg('Bank account verified and saved!');
-                                                        setTimeout(() => setSuccessMsg(''), 3000);
+                                                    onClick={async () => {
+                                                        try {
+                                                            const userId = localStorage.getItem('userId') || user?.userId || user?.UserId || '';
+                                                            const res = await apiClient.post('/User/updateDriverDetail', {
+                                                                userId,
+                                                                bankAccountNumber: bankDetails.accountNumber,
+                                                                ifscCode: bankDetails.ifscCode,
+                                                                firstName: bankDetails.accountHolderName
+                                                            });
+                                                            if (res.status === 200 || res.data?.status === 'Success' || res.data > 0) {
+                                                                setSuccessMsg('Bank account verified and saved!');
+                                                                setTimeout(() => setSuccessMsg(''), 3000);
+                                                            } else {
+                                                                setErrors(['Failed to save bank account details.']);
+                                                            }
+                                                        } catch (err) {
+                                                            console.error('Failed to save bank details:', err);
+                                                            setErrors(['Failed to save bank details.']);
+                                                        }
                                                     }}
                                                     className="btn-primary bg-primary-600 hover:bg-primary-500 text-white font-bold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
                                                 >
@@ -1147,6 +1280,68 @@ const ProfilePage = () => {
                         )}
 
                     </div>
+                )}
+            </div>
+
+            {/* Mobile Bottom Quick Navigation */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-slate-900 border-t border-slate-800 text-white shadow-2xl flex items-center justify-around py-2 px-1 pb-safe">
+                {isCustomer ? (
+                    <>
+                        <button onClick={() => navigate('/customer-portal?tab=new')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Home className="h-5 w-5" />
+                            Home
+                        </button>
+                        <button onClick={() => navigate('/customer-portal?tab=shipments')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Package className="h-5 w-5" />
+                            Shipments
+                        </button>
+                        <button onClick={() => navigate('/profile')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-primary-400 cursor-pointer">
+                            <User className="h-5 w-5" />
+                            Profile
+                        </button>
+                    </>
+                ) : isTransporter ? (
+                    <>
+                        <button onClick={() => navigate('/transporter-dashboard?tab=overview')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <LayoutDashboard className="h-5 w-5" />
+                            Dashboard
+                        </button>
+                        <button onClick={() => navigate('/transporter-dashboard?tab=vehicles')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Truck className="h-5 w-5" />
+                            Fleet
+                        </button>
+                        <button onClick={() => navigate('/transporter-dashboard?tab=drivers')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Users className="h-5 w-5" />
+                            Driver
+                        </button>
+                        <button onClick={() => navigate('/transporter-dashboard?tab=requests')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Package className="h-5 w-5" />
+                            Requests
+                        </button>
+                        <button onClick={() => navigate('/transporter-dashboard?tab=finance')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <CreditCard className="h-5 w-5" />
+                            Finance
+                        </button>
+                    </>
+                ) : (
+                    <>
+                        <button onClick={() => navigate('/driver-dashboard?tab=overview')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Home className="h-5 w-5" />
+                            Home
+                        </button>
+                        <button onClick={() => navigate('/driver-dashboard?tab=wallet')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Wallet className="h-5 w-5" />
+                            Wallet
+                        </button>
+                        <button onClick={() => navigate('/driver-dashboard?tab=overview')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400 cursor-pointer">
+                            <Package className="h-5 w-5" />
+                            Shipments
+                        </button>
+                        <button onClick={() => navigate('/profile')} className="flex flex-col items-center gap-1 text-[10px] font-bold text-primary-400 cursor-pointer">
+                            <User className="h-5 w-5" />
+                            Profile
+                        </button>
+                    </>
                 )}
             </div>
         </div>

@@ -133,6 +133,20 @@ namespace navgatix
                 });
             });
 
+            // Configure unlimited file upload limits and form options
+            services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+            {
+                options.ValueLengthLimit = int.MaxValue;
+                options.MultipartBodyLengthLimit = long.MaxValue; // Unlimited upload size
+                options.MultipartHeadersLengthLimit = int.MaxValue;
+                options.MemoryBufferThreshold = int.MaxValue;
+            });
+
+            services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(options =>
+            {
+                options.Limits.MaxRequestBodySize = null; // Unlimited request body size
+            });
+
             services.AddControllers();
             services.AddControllersWithViews();
             services.AddSpaStaticFiles(configuration =>

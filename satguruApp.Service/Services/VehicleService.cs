@@ -172,9 +172,10 @@ namespace satguruApp.Service.Services
             {
                 vehicle.IsAvailable = false;
                 _db.Vehicles.Update(vehicle);
+                var validDriverId = await ResolveValidDriverIdAsync(model.DriverId);
                 var bookingExists = await _db.Bookings.FirstOrDefaultAsync(x =>
                     x.VehicleId == model.VehicleId &&
-                    x.DriverId == model.DriverId &&
+                    x.DriverId == validDriverId &&
                     x.CustomerId == model.CustomerId &&
                     x.CT_BookingStatus != RideStatus.RideCompleted &&
                     x.CT_BookingStatus != RideStatus.Cancelled);
@@ -184,7 +185,7 @@ namespace satguruApp.Service.Services
                     {
                         VehicleId = model.VehicleId,
                         CustomerId = model.CustomerId,
-                        DriverId = model.DriverId,
+                        DriverId = validDriverId,
                         PickupAddress = model.PickupAddress,
                         PickupLat = model.PickupLat,
                         PickupLng = model.PickupLng,
@@ -223,19 +224,27 @@ namespace satguruApp.Service.Services
         }
         public async Task<BookingViewModel> CancelBookingVehicleRide(BookingViewModel model)
         {
-            var booking = await _db.Bookings.Where(x => x.Id == model.Id && x.VehicleId == model.VehicleId && x.DriverId == model.DriverId && x.CustomerId == model.CustomerId).FirstOrDefaultAsync();
+            var booking = await _db.Bookings.FirstOrDefaultAsync(x => x.Id == model.Id && x.IsDeleted != true);
             if (booking != null)
             {
                 booking.CT_BookingStatus = RideStatus.Cancelled;
                 booking.IsAvailable = true;
                 _db.Bookings.Update(booking);
-                var vehicle = await _db.Vehicles.Where(x => x.Id == booking.VehicleId).FirstOrDefaultAsync();
-                if (vehicle != null)
+                if (booking.VehicleId.HasValue)
                 {
-                    vehicle.IsAvailable = true;
-                    _db.Vehicles.Update(vehicle);
+                    var vehicle = await _db.Vehicles.FirstOrDefaultAsync(x => x.Id == booking.VehicleId.Value);
+                    if (vehicle != null)
+                    {
+                        vehicle.IsAvailable = true;
+                        _db.Vehicles.Update(vehicle);
+                    }
                 }
                 await _db.SaveChangesAsync();
+
+                string cancelledByRole = !string.IsNullOrWhiteSpace(model.CustomerId) && model.CustomerId == booking.CustomerId ? "Customer" : "Driver";
+                string cancellingUserName = model.CustomerName ?? model.DriverName ?? cancelledByRole;
+                await NotifyCancellationAsync(booking, cancelledByRole, cancellingUserName);
+
                 model.Message = "Your Booking has been cancelled.";
             }
             else
@@ -244,10 +253,133 @@ namespace satguruApp.Service.Services
             }
             return model;
         }
+
+        public async Task NotifyCancellationAsync(Booking booking, string cancelledByRole, string cancellingUserName)
+        {
+            if (booking == null) return;
+
+            long bookingId = booking.Id;
+            string cName = string.IsNullOrWhiteSpace(cancellingUserName) ? cancelledByRole : cancellingUserName;
+
+            // 1. Notify Customer if Customer was not the one who cancelled
+            if (cancelledByRole != "Customer" && !string.IsNullOrWhiteSpace(booking.CustomerId))
+            {
+                string msgPayload = cancelledByRole == "Driver" 
+                    ? $"RIDE_CANCELLED_BY_DRIVER|{bookingId}|{cName}" 
+                    : $"RIDE_CANCELLED_BY_TRANSPORTER|{bookingId}|{cName}";
+
+                string title = cancelledByRole == "Driver" ? "Ride Cancelled by Driver" : "Ride Cancelled by Transporter";
+                string body = $"Shipment #{bookingId} was cancelled by {cancelledByRole} {cName}.";
+
+                var notif = new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = booking.CustomerId,
+                    Title = title,
+                    Message = msgPayload,
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _db.Notifications.Add(notif);
+                await SafePushToUserAsync(booking.CustomerId, new PushNotificationPayload { Title = title, Body = body, Data = CreatePushData(bookingId, "ride_cancelled", "cancelled") });
+            }
+
+            // 2. Identify assigned / candidate Driver
+            Driver? assignedDriver = null;
+            if (booking.DriverId.HasValue)
+            {
+                assignedDriver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == booking.DriverId.Value && d.IsDeleted != true);
+            }
+            if (assignedDriver == null)
+            {
+                var assignNotif = await _db.Notifications.FirstOrDefaultAsync(n => n.Message != null && n.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|"));
+                if (assignNotif != null && !string.IsNullOrWhiteSpace(assignNotif.UserId))
+                {
+                    assignedDriver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == assignNotif.UserId && d.IsDeleted != true);
+                }
+            }
+
+            // 3. Notify Driver if Driver was not the one who cancelled
+            if (cancelledByRole != "Driver" && assignedDriver != null && !string.IsNullOrWhiteSpace(assignedDriver.UserId))
+            {
+                string msgPayload = cancelledByRole == "Customer" 
+                    ? $"RIDE_CANCELLED_BY_CUSTOMER|{bookingId}|{cName}" 
+                    : $"RIDE_CANCELLED_BY_TRANSPORTER|{bookingId}|{cName}";
+
+                string title = cancelledByRole == "Customer" ? "Ride Cancelled by Customer" : "Ride Cancelled by Transporter";
+                string body = $"Shipment #{bookingId} was cancelled by {cancelledByRole} {cName}.";
+
+                var notif = new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = assignedDriver.UserId,
+                    Title = title,
+                    Message = msgPayload,
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _db.Notifications.Add(notif);
+                await SafePushToUserAsync(assignedDriver.UserId, new PushNotificationPayload { Title = title, Body = body, Data = CreatePushData(bookingId, "ride_cancelled", "cancelled") });
+            }
+
+            // 4. Notify Transporter (if Transporter claimed/assigned or if Driver belongs to Transporter fleet)
+            TransporterDetail? transporter = null;
+            if (assignedDriver != null && assignedDriver.TransporterId.HasValue)
+            {
+                transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == assignedDriver.TransporterId.Value && t.IsDeleted != true);
+            }
+            if (transporter == null)
+            {
+                var claimNotif = await _db.Notifications.FirstOrDefaultAsync(n => n.Title == "Shipment Claimed" && n.Message != null && n.Message.StartsWith($"CLAIM|{bookingId}|"));
+                if (claimNotif != null)
+                {
+                    var parts = claimNotif.Message.Split('|');
+                    if (parts.Length > 2 && long.TryParse(parts[2], out var tId))
+                    {
+                        transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == tId && t.IsDeleted != true);
+                    }
+                }
+            }
+            if (transporter == null)
+            {
+                var assignNotif = await _db.Notifications.FirstOrDefaultAsync(n => n.Message != null && n.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|"));
+                if (assignNotif != null)
+                {
+                    var parts = assignNotif.Message.Split('|');
+                    if (parts.Length > 2 && long.TryParse(parts[2], out var tId))
+                    {
+                        transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == tId && t.IsDeleted != true);
+                    }
+                }
+            }
+
+            if (cancelledByRole != "Transporter" && transporter != null && !string.IsNullOrWhiteSpace(transporter.UserId))
+            {
+                string msgPayload = cancelledByRole == "Driver" 
+                    ? $"RIDE_CANCELLED_BY_DRIVER|{bookingId}|{cName}" 
+                    : $"RIDE_CANCELLED_BY_CUSTOMER|{bookingId}|{cName}";
+
+                string title = cancelledByRole == "Driver" ? "Fleet Driver Cancelled Ride" : "Customer Cancelled Shipment";
+                string body = $"Shipment #{bookingId} was cancelled by {cancelledByRole} {cName}.";
+
+                var notif = new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = transporter.UserId,
+                    Title = title,
+                    Message = msgPayload,
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _db.Notifications.Add(notif);
+            }
+
+            await _db.SaveChangesAsync();
+        }
         public async Task<List<BookingViewModel>> BookingVehicleRides(string userId)
         {
             var bookings = await _db.Bookings
-                .Where(book => book.CustomerId == userId && book.CT_BookingStatus != RideStatus.Cancelled)
+                .Where(book => book.CustomerId == userId && (book.IsDeleted == null || book.IsDeleted == false))
                 .Select(book => new BookingViewModel
                 {
                     Id = book.Id,
@@ -288,24 +420,98 @@ namespace satguruApp.Service.Services
                 return new List<BookingViewModel> { new BookingViewModel { Message = "Driver user id is required." } };
             }
 
-            var pendingBookingIds = await _db.Notifications
-                .Where(x => x.UserId == driverUserId && x.Title == "New Ride Request" && x.IsRead != true)
-                .Select(x => x.Message)
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => 
+                (d.UserId == driverUserId || d.Id.ToString() == driverUserId || (d.UserId != null && d.UserId.ToLower() == driverUserId.ToLower())) 
+                && d.IsDeleted != true);
+
+            var driverUserIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(driverUserId)) driverUserIds.Add(driverUserId);
+            if (driver != null)
+            {
+                if (!string.IsNullOrWhiteSpace(driver.UserId)) driverUserIds.Add(driver.UserId);
+                driverUserIds.Add(driver.Id.ToString());
+            }
+
+            // Fetch ALL unread notifications
+            var unreadNotifs = await _db.Notifications
+                .Where(x => x.IsRead != true && x.Message != null)
+                .Select(x => new { x.UserId, x.Title, x.Message })
                 .ToListAsync();
 
-            var bookingIds = pendingBookingIds
-                .Select(ParseBookingIdFromNotification)
-                .Where(x => x > 0)
-                .Distinct()
-                .ToList();
+            var assignedBookingIds = new HashSet<long>();
+            var requestedBookingIds = new HashSet<long>();
+
+            foreach (var n in unreadNotifs)
+            {
+                var msg = n.Message;
+                if (string.IsNullOrWhiteSpace(msg)) continue;
+
+                var bid = ParseBookingIdFromNotification(msg);
+                if (bid <= 0) continue;
+
+                bool isDirectForDriver = driverUserIds.Contains(n.UserId);
+                bool isTransporterMsg = false;
+
+                if (msg.StartsWith("ASSIGN_SHIPMENT|"))
+                {
+                    var parts = msg.Split('|');
+                    if (isDirectForDriver)
+                    {
+                        isTransporterMsg = true;
+                    }
+                    else if (driver != null && driver.TransporterId.HasValue && parts.Length > 2 && long.TryParse(parts[2], out var tId) && tId == driver.TransporterId.Value)
+                    {
+                        isTransporterMsg = true;
+                    }
+
+                    if (isTransporterMsg)
+                    {
+                        assignedBookingIds.Add(bid);
+                    }
+                }
+                else if (isDirectForDriver)
+                {
+                    requestedBookingIds.Add(bid);
+                }
+            }
+
+            var bookingIds = new HashSet<long>(requestedBookingIds);
+            bookingIds.UnionWith(assignedBookingIds);
+
+            Console.WriteLine($"[DEBUG_DR] driverUserId: '{driverUserId}', driver.Id: '{driver?.Id}'");
+            Console.WriteLine($"[DEBUG_DR] bookingIds: {string.Join(",", bookingIds)}");
+            Console.WriteLine($"[DEBUG_DR] assignedBookingIds: {string.Join(",", assignedBookingIds)}");
 
             if (!bookingIds.Any())
             {
                 return new List<BookingViewModel>();
             }
 
-            return await _db.Bookings
-                .Where(book => bookingIds.Contains(book.Id)
+            // Identify ALL claimed bookings (claimed by ANY transporter)
+            var claimedBookingNotifs = await _db.Notifications
+                .Where(n => n.Title == "Shipment Claimed" && n.Message != null && n.Message.StartsWith("CLAIM|"))
+                .Select(n => n.Message)
+                .ToListAsync();
+
+            var allClaimedIds = claimedBookingNotifs
+                .Select(msg => {
+                    var parts = msg.Split('|');
+                    return parts.Length > 1 && long.TryParse(parts[1], out var bid) ? bid : 0;
+                })
+                .Where(id => id > 0)
+                .ToHashSet();
+
+            Console.WriteLine($"[DEBUG_DR] allClaimedIds: {string.Join(",", allClaimedIds)}");
+
+            // Exclude ALL claimed bookings UNLESS THIS specific driver was assigned by the transporter (assignedBookingIds contains it)
+            var excludeClaimedIds = new HashSet<long>(allClaimedIds);
+            excludeClaimedIds.ExceptWith(assignedBookingIds);
+
+            Console.WriteLine($"[DEBUG_DR] excludeClaimedIds: {string.Join(",", excludeClaimedIds)}");
+
+            var rawResults = await _db.Bookings
+                .Where(book => (bookingIds.Contains(book.Id) || assignedBookingIds.Contains(book.Id))
+                    && !excludeClaimedIds.Contains(book.Id)
                     && book.IsDeleted != true
                     && book.CT_BookingStatus == RideStatus.RequestForRide
                     && !book.DriverId.HasValue)
@@ -333,8 +539,107 @@ namespace satguruApp.Service.Services
                     CreatedAt = book.CreatedAt,
                     IsAvailable = book.IsAvailable,
                     IsDeleted = book.IsDeleted,
+                    CT_VehicleType = book.CT_VehicleType,
+                    CTBodyType = book.CTBodyType,
+                    CTTyreType = book.CTTyreType,
                 })
                 .ToListAsync();
+
+            Vehicle? driverVehicle = null;
+            if (driver != null)
+            {
+                var assignedBooking = await _db.Bookings
+                    .Where(b => b.DriverId == driver.Id && b.VehicleId.HasValue && b.IsDeleted != true && b.CT_BookingStatus != RideStatus.Cancelled)
+                    .OrderByDescending(b => b.CreatedAt)
+                    .FirstOrDefaultAsync();
+
+                if (assignedBooking != null && assignedBooking.VehicleId.HasValue)
+                {
+                    driverVehicle = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == assignedBooking.VehicleId.Value && v.IsDeleted != true);
+                }
+
+                if (driverVehicle == null && driver.TransporterId.HasValue)
+                {
+                    driverVehicle = await _db.Vehicles.FirstOrDefaultAsync(v => v.TransporterId == driver.TransporterId.Value && v.IsDeleted != true);
+                }
+
+                if (driverVehicle == null && !string.IsNullOrEmpty(driver.UserId))
+                {
+                    driverVehicle = await _db.Vehicles.FirstOrDefaultAsync(v => (v.TransporterId == null || v.TransporterId == 0) && v.CreatedBy != null && v.CreatedBy.ToString() == driver.UserId && v.IsDeleted != true);
+                }
+            }
+
+            string? transporterName = null;
+            if (driver != null && driver.TransporterId.HasValue)
+            {
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value);
+                if (transporter != null)
+                {
+                    transporterName = !string.IsNullOrWhiteSpace(transporter.CompanyName) ? transporter.CompanyName : "Your Transporter";
+                }
+            }
+
+            // Fetch all CommonTypes to resolve vehicle, body, and tyre type names
+            var commonTypesDict = await _db.CommonTypes
+                .ToDictionaryAsync(ct => ct.Id, ct => ct.Name);
+
+            var results = new List<BookingViewModel>();
+            foreach (var r in rawResults)
+            {
+                bool isAssignedByTransporter = assignedBookingIds.Contains(r.Id) 
+                    || (r.DriverId.HasValue && driver != null && r.DriverId == driver.Id);
+
+                // Populate human-readable requirement names for driver view
+                if (r.CT_VehicleType.HasValue && commonTypesDict.TryGetValue(r.CT_VehicleType.Value, out var vName))
+                    r.VehicleTypeName = vName;
+                if (r.CTBodyType.HasValue && commonTypesDict.TryGetValue(r.CTBodyType.Value, out var bName))
+                    r.BodyTypeName = bName;
+                if (r.CTTyreType.HasValue && commonTypesDict.TryGetValue(r.CTTyreType.Value, out var tName))
+                    r.TyreTypeName = tName;
+
+                // Vehicle Matching Filter:
+                // For general requests (not assigned directly by transporter), check strict requirements (Vehicle ID, Vehicle Type, Payload Capacity)
+                if (!isAssignedByTransporter && driverVehicle != null)
+                {
+                    // 1. If customer booked a specific vehicle ID
+                    if (r.VehicleId.HasValue && r.VehicleId.Value != Guid.Empty && r.VehicleId.Value != driverVehicle.Id)
+                    {
+                        continue; // Skip: requested vehicle does not match driver's vehicle
+                    }
+
+                    // 2. If customer specified a Vehicle Type (2 Wheeler / 3 Wheeler / Truck etc.)
+                    if (r.CT_VehicleType.HasValue && r.CT_VehicleType.Value > 0 && driverVehicle.CT_VehicleType.HasValue && driverVehicle.CT_VehicleType.Value != r.CT_VehicleType.Value)
+                    {
+                        continue; // Skip: vehicle type mismatch
+                    }
+
+                    // 3. If goods weight exceeds vehicle capacity
+                    if (r.GoodsWeight.HasValue && r.GoodsWeight.Value > 0 && driverVehicle.CapacityTons.HasValue && driverVehicle.CapacityTons.Value > 0)
+                    {
+                        var capacityKg = (double)driverVehicle.CapacityTons.Value * 1000.0;
+                        if ((double)r.GoodsWeight.Value > capacityKg)
+                        {
+                            continue; // Skip: weight exceeds vehicle payload capacity
+                        }
+                    }
+                }
+
+                if (isAssignedByTransporter)
+                {
+                    r.IsTransporterAssigned = true;
+                    r.TransporterName = transporterName ?? "Your Transporter";
+                }
+                else
+                {
+                    r.IsTransporterAssigned = false;
+                    r.TransporterName = null;
+                }
+
+                results.Add(r);
+            }
+
+            Console.WriteLine($"[DEBUG_DR] results count: {results.Count}");
+            return results;
         }
 
         public async Task<List<BookingViewModel>> GetTransporterRideRequestsAsync(string transporterUserId)
@@ -367,8 +672,23 @@ namespace satguruApp.Service.Services
 
             if (!bookingIds.Any()) return new List<BookingViewModel>();
 
+            // Exclude claimed bookings
+            var claimedBookingIds = await _db.Notifications
+                .Where(n => n.Title == "Shipment Claimed" && n.Message.StartsWith("CLAIM|"))
+                .Select(n => n.Message)
+                .ToListAsync();
+
+            var claimedIds = claimedBookingIds
+                .Select(msg => {
+                    var parts = msg.Split('|');
+                    return parts.Length > 1 && long.TryParse(parts[1], out var bid) ? bid : 0;
+                })
+                .Where(id => id > 0)
+                .ToHashSet();
+
             return await _db.Bookings
                 .Where(book => bookingIds.Contains(book.Id)
+                    && !claimedIds.Contains(book.Id)
                     && book.IsDeleted != true
                     && book.CT_BookingStatus == RideStatus.RequestForRide
                     && !book.DriverId.HasValue)
@@ -682,17 +1002,18 @@ namespace satguruApp.Service.Services
                 var assignment = activeAssignments.FirstOrDefault(a => a.DriverId == driver.Id);
                 var vehicle = assignment != null ? vehicles.FirstOrDefault(v => v.Id == assignment.VehicleId) : null;
 
+                if (vehicle == null && driver.UserId != null)
+                {
+                    vehicle = vehicles.FirstOrDefault(v => (v.TransporterId == null || v.TransporterId == 0) && (v.CreatedBy != null && v.CreatedBy.ToString() == driver.UserId));
+                }
+
+                // Match STRICTLY by requested CT_VehicleType (Vehicle Category), excluding Body & Tyre types as requested
                 if (model.CT_VehicleType.HasValue && model.CT_VehicleType != 0)
                 {
-                    if (vehicle == null || vehicle.CT_VehicleType != model.CT_VehicleType) continue;
-                }
-                if (model.CTBodyType.HasValue && model.CTBodyType != 0)
-                {
-                    if (vehicle == null || vehicle.CTBodyType != model.CTBodyType) continue;
-                }
-                if (model.CTTyreType.HasValue && model.CTTyreType != 0)
-                {
-                    if (vehicle == null || vehicle.CTTyreType != model.CTTyreType) continue;
+                    if (vehicle == null || vehicle.CT_VehicleType != model.CT_VehicleType)
+                    {
+                        continue;
+                    }
                 }
 
                 double lat = 28.6139;
@@ -879,12 +1200,13 @@ namespace satguruApp.Service.Services
                 return new BookingViewModel { Message = "Destination coordinates are invalid." };
             }
 
+            var validDriverId = await ResolveValidDriverIdAsync(model.DriverId);
             var booking = new Booking
             {
                 CustomerId = model.CustomerId,
                 CustomerName = model.CustomerName,
                 VehicleId = model.VehicleId,
-                DriverId = model.DriverId,
+                DriverId = validDriverId,
                 PickupAddress = model.PickupAddress,
                 PickupLat = model.PickupLat,
                 PickupLng = model.PickupLng,
@@ -966,14 +1288,10 @@ namespace satguruApp.Service.Services
                             (double)booking.PickupLng.Value,
                             (double)dLat.Value,
                             (double)dLng.Value,
-                            50.0 // 50 km radius
+                            50.0 // 50 km radius restriction
                         );
 
                         if (!isClose) continue;
-                    }
-                    else
-                    {
-                        continue; // Skip drivers without known coordinates
                     }
 
                     var n = new satguruApp.DLL.Models.Notification
@@ -998,7 +1316,7 @@ namespace satguruApp.Service.Services
             return vm;
         }
 
-        public async Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null)
+        public async Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null, string? cancelledBy = null)
         {
             if (!RideStatus.TryParse(status, out var nextStatus))
             {
@@ -1009,7 +1327,9 @@ namespace satguruApp.Service.Services
                 };
             }
 
-            var booking = await _db.Bookings.FirstOrDefaultAsync(x => x.Id == bookingId && x.IsDeleted != true);
+            var booking = await _db.Bookings
+                .Include(x => x.Driver)
+                .FirstOrDefaultAsync(x => x.Id == bookingId && x.IsDeleted != true);
             if (booking == null)
             {
                 return new BookingViewModel { Id = bookingId, Message = "Ride not found." };
@@ -1037,7 +1357,7 @@ namespace satguruApp.Service.Services
 
             if (driverId.HasValue)
             {
-                booking.DriverId = driverId;
+                booking.DriverId = await ResolveValidDriverIdAsync(driverId);
             }
 
             booking.CT_BookingStatus = nextStatus;
@@ -1084,25 +1404,11 @@ namespace satguruApp.Service.Services
                     });
             }
 
-            if (nextStatus == RideStatus.Cancelled && booking.DriverId.HasValue)
+            if (nextStatus == RideStatus.Cancelled)
             {
-                var driverUserId = await _db.Drivers
-                    .Where(x => x.Id == booking.DriverId.Value)
-                    .Select(x => x.UserId)
-                    .FirstOrDefaultAsync();
-
-                if (!string.IsNullOrWhiteSpace(driverUserId))
-                {
-                    await CreateNotificationAsync(driverUserId, "Ride Cancelled", $"Ride #{booking.Id} has been cancelled.");
-                    await SafePushToUserAsync(
-                        driverUserId,
-                        new PushNotificationPayload
-                        {
-                            Title = "Ride Cancelled",
-                            Body = $"Ride #{booking.Id} has been cancelled.",
-                            Data = CreatePushData(booking.Id, "ride_status", RideStatus.ToName(nextStatus)),
-                        });
-                }
+                string role = string.Equals(cancelledBy, "Customer", StringComparison.OrdinalIgnoreCase) ? "Customer" : "Driver";
+                string cName = role == "Customer" ? (booking.CustomerName ?? "Customer") : (booking.Driver?.Name ?? "Driver");
+                await NotifyCancellationAsync(booking, role, cName);
             }
 
             var vm = MapBookingToViewModel(booking);
@@ -1161,21 +1467,54 @@ namespace satguruApp.Service.Services
                 };
             }
 
-            var driverNotification = await _db.Notifications
-                .OrderByDescending(x => x.CreatedAt)
-                .FirstOrDefaultAsync(x =>
-                    x.UserId == driverUserId &&
-                    x.Title == "New Ride Request" &&
-                    x.IsRead != true &&
-                    x.Message != null &&
-                    x.Message.Contains($"Ride #{bookingId}"));
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => 
+                (d.UserId == driverUserId || d.Id.ToString() == driverUserId || (d.UserId != null && d.UserId.ToLower() == driverUserId.ToLower())) 
+                && d.IsDeleted != true);
 
-            if (driverNotification == null)
+            var driverUserIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(driverUserId)) driverUserIds.Add(driverUserId);
+            if (driver != null)
             {
-                return new BookingViewModel { Id = bookingId, Message = "Pending ride request not found for this driver." };
+                if (!string.IsNullOrWhiteSpace(driver.UserId)) driverUserIds.Add(driver.UserId);
+                driverUserIds.Add(driver.Id.ToString());
             }
 
-            driverNotification.IsRead = true;
+            var driverNotifications = await _db.Notifications
+                .Where(x => driverUserIds.Contains(x.UserId) && x.IsRead != true)
+                .ToListAsync();
+
+            var matchingNotif = driverNotifications
+                .OrderByDescending(x => x.CreatedAt)
+                .FirstOrDefault(x =>
+                    x.Message != null &&
+                    ((x.Title == "New Ride Request" && x.Message.Contains($"Ride #{bookingId}")) ||
+                     (x.Title == "New Shipment Assignment" && (x.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|") || x.Message.Contains($"|{bookingId}|")))));
+
+            if (matchingNotif != null)
+            {
+                matchingNotif.IsRead = true;
+                _db.Notifications.Update(matchingNotif);
+            }
+
+            // Notify Transporter if this driver belongs to a Transporter fleet
+            if (driver != null && driver.TransporterId.HasValue)
+            {
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value);
+                if (transporter != null && !string.IsNullOrEmpty(transporter.UserId))
+                {
+                    var driverName = !string.IsNullOrWhiteSpace(driver.Name) ? driver.Name : "Driver";
+                    var rejectNotif = new satguruApp.DLL.Models.Notification
+                    {
+                        UserId = transporter.UserId,
+                        Message = $"DRIVER_REJECT_ORDER|{bookingId}|{driverName}",
+                        CreatedAt = DateTime.UtcNow,
+                        IsRead = false,
+                        Title = "Driver Rejected Assignment"
+                    };
+                    _db.Notifications.Add(rejectNotif);
+                }
+            }
+
             await _db.SaveChangesAsync();
 
             var hasPendingDrivers = await _db.Notifications.AnyAsync(x =>
@@ -1189,14 +1528,6 @@ namespace satguruApp.Service.Services
                 const string title = "Ride Request Update";
                 var body = $"No driver accepted ride #{booking.Id} yet. We are waiting for another driver response.";
                 await CreateNotificationAsync(booking.CustomerId, title, body);
-                await SafePushToUserAsync(
-                    booking.CustomerId,
-                    new PushNotificationPayload
-                    {
-                        Title = title,
-                        Body = body,
-                        Data = CreatePushData(booking.Id, "ride_request_update", RideStatus.ToName(RideStatus.RequestForRide)),
-                    });
             }
 
             var vm = MapBookingToViewModel(booking);
@@ -1390,16 +1721,31 @@ namespace satguruApp.Service.Services
                 return 0;
             }
 
-            const string marker = "Ride #";
-            var markerIndex = message.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (markerIndex < 0)
+            if (message.Contains("|"))
             {
-                return 0;
+                var parts = message.Split('|');
+                if (parts.Length > 1 && long.TryParse(parts[1], out var pipeBid) && pipeBid > 0)
+                {
+                    return pipeBid;
+                }
             }
 
-            var start = markerIndex + marker.Length;
-            var digits = new string(message.Skip(start).TakeWhile(char.IsDigit).ToArray());
-            return long.TryParse(digits, out var bookingId) ? bookingId : 0;
+            string[] markers = new[] { "Ride #", "Shipment #", "Booking #", "#" };
+            foreach (var marker in markers)
+            {
+                var markerIndex = message.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (markerIndex >= 0)
+                {
+                    var start = markerIndex + marker.Length;
+                    var digits = new string(message.Skip(start).TakeWhile(char.IsDigit).ToArray());
+                    if (long.TryParse(digits, out var bookingId) && bookingId > 0)
+                    {
+                        return bookingId;
+                    }
+                }
+            }
+
+            return 0;
         }
 
         private async Task CreateNotificationAsync(string userId, string title, string message)
@@ -1465,6 +1811,167 @@ namespace satguruApp.Service.Services
                 RideStatus.Cancelled => ("Ride Cancelled", $"Ride #{bookingId} has been cancelled."),
                 _ => ("Ride Status Updated", $"Ride #{bookingId} status changed to {RideStatus.ToName(nextStatus)}."),
             };
+        }
+
+        public async Task<DriverSummaryCardViewModel> GetDriverSummaryCardAsync(string driverUserId)
+        {
+            var result = new DriverSummaryCardViewModel { DriverUserId = driverUserId };
+            if (string.IsNullOrWhiteSpace(driverUserId)) return result;
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+            if (driver == null) return result;
+
+            result.DriverId = driver.Id;
+            result.DriverName = driver.Name ?? string.Empty;
+            result.Phone = driver.Phone ?? string.Empty;
+            result.ProfileStatus = driver.ProfileStatus ?? "Approved";
+
+            if (Guid.TryParse(driverUserId, out var parsedDriverGuid))
+            {
+                var ratings = await _db.UserRatings.Where(r => r.Target_User_Id == parsedDriverGuid && r.IsDeleted != true).ToListAsync();
+                if (ratings.Any())
+                {
+                    result.AverageRating = Math.Round((double)ratings.Average(r => r.Score ?? 5.0m), 1);
+                }
+            }
+
+            // Find active booking for this driver
+            var activeBooking = await _db.Bookings
+                .Where(b => b.DriverId == driver.Id && b.IsDeleted != true &&
+                       (b.CT_BookingStatus == RideStatus.DriverAssigned ||
+                        b.CT_BookingStatus == RideStatus.DriverArriving ||
+                        b.CT_BookingStatus == RideStatus.RideStarted))
+                .OrderByDescending(b => b.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            Vehicle? assignedVehicle = null;
+
+            if (activeBooking != null)
+            {
+                if (activeBooking.VehicleId.HasValue)
+                {
+                    assignedVehicle = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == activeBooking.VehicleId.Value && v.IsDeleted != true);
+                }
+
+                result.IsOnRide = true;
+                result.DutyStatus = "On Ride";
+                result.ActiveBookingId = activeBooking.Id;
+                result.PickupAddress = activeBooking.PickupAddress;
+                result.DropAddress = activeBooking.DropAddress;
+                result.EstimatedFare = activeBooking.EstimatedFare;
+                result.CustomerName = activeBooking.CustomerName;
+
+                if (!string.IsNullOrWhiteSpace(activeBooking.CustomerId))
+                {
+                    var customerUser = await _db.Users.FirstOrDefaultAsync(u => u.Id == activeBooking.CustomerId || u.UserName == activeBooking.CustomerId);
+                    if (customerUser != null)
+                    {
+                        result.CustomerPhone = customerUser.PhoneNumber ?? string.Empty;
+                    }
+                }
+
+                result.RideStatusName = activeBooking.CT_BookingStatus switch
+                {
+                    RideStatus.DriverAssigned => "Driver Assigned",
+                    RideStatus.DriverArriving => "Driver Arriving at Pickup",
+                    RideStatus.RideStarted => "Journey in Progress",
+                    _ => "On Ride"
+                };
+
+                if (assignedVehicle != null)
+                {
+                    var liveTracking = await _db.LiveVehicleTrackings
+                        .Where(t => t.VehicleId == assignedVehicle.Id)
+                        .OrderByDescending(t => t.LastUpdated)
+                        .FirstOrDefaultAsync();
+
+                    if (liveTracking != null && liveTracking.LastLatitude.HasValue && liveTracking.LastLongitude.HasValue)
+                    {
+                        result.CurrentLat = (double)liveTracking.LastLatitude.Value;
+                        result.CurrentLng = (double)liveTracking.LastLongitude.Value;
+                        result.CurrentAddress = $"{result.CurrentLat:F4}, {result.CurrentLng:F4}";
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(result.CurrentAddress))
+                {
+                    result.CurrentAddress = activeBooking.PickupAddress ?? "En route";
+                }
+            }
+            else
+            {
+                result.IsOnRide = false;
+                result.DutyStatus = "Available";
+            }
+
+            if (assignedVehicle == null && driver.TransporterId.HasValue)
+            {
+                assignedVehicle = await _db.Vehicles
+                    .FirstOrDefaultAsync(v => v.TransporterId == driver.TransporterId.Value && v.IsDeleted != true);
+            }
+
+            if (assignedVehicle != null)
+            {
+                result.AssignedVehicleName = assignedVehicle.VehicleName ?? string.Empty;
+                result.AssignedVehicleNumber = assignedVehicle.VehicleNumber ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(result.CurrentAddress))
+                {
+                    var latestTracking = await _db.LiveVehicleTrackings
+                        .Where(t => t.VehicleId == assignedVehicle.Id)
+                        .OrderByDescending(t => t.LastUpdated)
+                        .FirstOrDefaultAsync();
+
+                    if (latestTracking != null && latestTracking.LastLatitude.HasValue && latestTracking.LastLongitude.HasValue)
+                    {
+                        result.CurrentLat = (double)latestTracking.LastLatitude.Value;
+                        result.CurrentLng = (double)latestTracking.LastLongitude.Value;
+                        result.CurrentAddress = $"{result.CurrentLat:F4}, {result.CurrentLng:F4}";
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(result.CurrentAddress))
+            {
+                result.CurrentAddress = "Available at depot / location";
+            }
+
+            var todayDate = DateTime.UtcNow.Date;
+            var todayBookings = await _db.Bookings
+                .Where(b => b.DriverId == driver.Id 
+                            && b.IsDeleted != true 
+                            && b.CreatedAt != null 
+                            && b.CreatedAt.Value.Date == todayDate 
+                            && b.CT_BookingStatus != RideStatus.Cancelled)
+                .ToListAsync();
+
+            result.TodaysTotalKm = Math.Round(todayBookings.Sum(b => 
+            {
+                if (!b.PickupLat.HasValue || !b.PickupLng.HasValue || !b.DropLat.HasValue || !b.DropLng.HasValue) return 0.0;
+                double r = 6371;
+                double dLat = (double)(b.DropLat.Value - b.PickupLat.Value) * Math.PI / 180.0;
+                double dLon = (double)(b.DropLng.Value - b.PickupLng.Value) * Math.PI / 180.0;
+                double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                           Math.Cos((double)b.PickupLat.Value * Math.PI / 180.0) * Math.Cos((double)b.DropLat.Value * Math.PI / 180.0) *
+                           Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+                return r * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            }), 1);
+
+            return result;
+        }
+
+        private async Task<Guid?> ResolveValidDriverIdAsync(Guid? candidateId)
+        {
+            if (!candidateId.HasValue || candidateId.Value == Guid.Empty) return null;
+
+            var candidateStr = candidateId.Value.ToString();
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == candidateId.Value || (d.UserId != null && d.UserId == candidateStr));
+            if (driver != null)
+            {
+                return driver.Id;
+            }
+
+            return null;
         }
 
         private sealed class DriverCandidate

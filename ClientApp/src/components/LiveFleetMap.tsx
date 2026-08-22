@@ -18,7 +18,12 @@ const LiveFleetMap: React.FC<LiveFleetMapProps> = ({ vehicles }) => {
     const points = useMemo(
         () =>
             vehicles
-                .filter((vehicle) => typeof vehicle.latitude === 'number' && typeof vehicle.longitude === 'number')
+                .filter(
+                    (vehicle) =>
+                        typeof vehicle.latitude === 'number' &&
+                        typeof vehicle.longitude === 'number' &&
+                        !(vehicle.latitude === 0 && vehicle.longitude === 0)
+                )
                 .map((vehicle) => ({
                     lat: Number(vehicle.latitude),
                     lng: Number(vehicle.longitude),
@@ -46,17 +51,14 @@ const LiveFleetMap: React.FC<LiveFleetMapProps> = ({ vehicles }) => {
         return [total.lat / points.length, total.lng / points.length];
     }, [points]);
 
-    if (!points.length) {
-        return (
-            <div className="h-[280px] rounded-2xl border border-dashed border-slate-200 bg-slate-50 grid place-items-center text-sm text-slate-500">
-                No live locations reported yet.
-            </div>
-        );
-    }
-
     return (
-        <div className="h-[280px] rounded-2xl border border-slate-200 overflow-hidden">
-            <MapContainer center={center as [number, number]} zoom={5} scrollWheelZoom className="h-full w-full">
+        <div className="h-[400px] rounded-2xl border border-slate-200 overflow-hidden relative">
+            {!points.length && (
+                <div className="absolute top-3 right-3 z-[1000] bg-slate-900/90 backdrop-blur-md text-white text-xs font-bold px-3 py-1.5 rounded-xl border border-white/20 shadow-lg">
+                    📡 Waiting for live vehicle GPS pings...
+                </div>
+            )}
+            <MapContainer center={center as [number, number]} zoom={points.length ? 10 : 5} scrollWheelZoom className="h-full w-full">
                 <TileLayer
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

@@ -17,7 +17,7 @@ namespace satguruApp.Service.Services.Interfaces
         public Task<BookingViewModel> BookingVehicle(BookingViewModel model);
         public Task<BookingViewModel> CancelBookingVehicleRide(BookingViewModel model);
         Task<BookingViewModel> RequestRideAsync(BookingViewModel model);
-        Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null);
+        Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null, string? cancelledBy = null);
         Task<BookingViewModel> RejectRideRequestAsync(long bookingId, string driverUserId);
         Task<BookingViewModel> RejectRideRequestByTransporterAsync(long bookingId, string transporterUserId);
         Task<BookingViewModel> GetRideAsync(long bookingId);
@@ -30,5 +30,6 @@ namespace satguruApp.Service.Services.Interfaces
         Task<RideTrackingSnapshotViewModel> GetTrackingSnapshotAsync(long bookingId);
         Task<List<VehicleViewModel>> GetVehicleList(VehicleViewModel vehicleView);
         Task<List<LiveVehicleTrackingHistoryViewModel>> GetRouteVehicleTrackings(Guid vehicleId, long? bookingId);
+        Task<DriverSummaryCardViewModel> GetDriverSummaryCardAsync(string driverUserId);
     }
 }

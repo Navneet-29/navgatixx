@@ -54,6 +54,8 @@ namespace satguruApp.Service.ViewModels
         public int? CTTyreType { get; set; }
         public string? PANCardUrl { get; set; }
         public string? ProfileStatus { get; set; }
+        public bool? IsOwner { get; set; }
+        public string? VerificationStatus { get; set; }
         public bool? IsOnline { get; set; }
         public string? Address { get; set; }
         public string? Pincode { get; set; }

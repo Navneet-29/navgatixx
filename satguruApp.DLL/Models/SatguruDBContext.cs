@@ -1284,6 +1284,8 @@ namespace satguruApp.DLL.Models
                 entity.Property(e => e.IsDeleted).HasDefaultValue(false);
                 entity.Property(e => e.LastLatitude).HasColumnType("decimal(18, 6)");
                 entity.Property(e => e.LastLongitude).HasColumnType("decimal(18, 6)");
+                entity.Property(e => e.Heading).HasColumnType("decimal(18, 2)");
+                entity.Property(e => e.Speed).HasColumnType("decimal(18, 2)");
                 entity.Property(e => e.LastUpdated).HasColumnType("datetime");
 
                 entity.HasOne(d => d.Vehicle).WithMany(p => p.LiveVehicleTrackings)

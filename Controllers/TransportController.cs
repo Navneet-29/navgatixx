@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using satguruApp.Service.Services.Interfaces;
@@ -13,6 +14,8 @@ namespace navgatix.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
+    [RequestSizeLimit(long.MaxValue)]
+    [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue, ValueLengthLimit = int.MaxValue)]
     public class TransportController : ControllerBase
     {
         private readonly ITransportService _transportService;
@@ -25,6 +28,7 @@ namespace navgatix.Controllers
         }
 
         [HttpGet("getDashboardSummary")]
+        [HttpGet("getDashboardSummary/{userId}")]
         public async Task<IActionResult> GetDashboardSummary(string userId)
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
@@ -32,6 +36,7 @@ namespace navgatix.Controllers
         }
 
         [HttpGet("getFleetOverview")]
+        [HttpGet("getFleetOverview/{userId}")]
         public async Task<IActionResult> GetFleetOverview(string userId)
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
@@ -39,6 +44,7 @@ namespace navgatix.Controllers
         }
 
         [HttpGet("getTransporterAnalytics")]
+        [HttpGet("getTransporterAnalytics/{userId}")]
         public async Task<IActionResult> GetTransporterAnalytics(string userId)
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
@@ -58,6 +64,7 @@ namespace navgatix.Controllers
         }
 
         [HttpGet("getDriversList")]
+        [HttpGet("getDriversList/{userId}")]
         public async Task<IActionResult> GetDriversList(string userId)
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
@@ -65,6 +72,7 @@ namespace navgatix.Controllers
         }
 
         [HttpGet("getVehiclesList")]
+        [HttpGet("getVehiclesList/{userId}")]
         public async Task<IActionResult> GetVehiclesList(string userId)
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
@@ -72,6 +80,7 @@ namespace navgatix.Controllers
         }
 
         [HttpGet("getTransporterEarnings")]
+        [HttpGet("getTransporterEarnings/{userId}")]
         public async Task<IActionResult> GetTransporterEarnings(string userId)
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
@@ -350,6 +359,19 @@ namespace navgatix.Controllers
             return Ok(new { message = "Leave request approved. Driver has been released." });
         }
 
+        [HttpPost("markNotificationRead")]
+        public async Task<IActionResult> MarkNotificationRead([FromQuery] Guid notificationId)
+        {
+            var notification = await _db.Notifications.FirstOrDefaultAsync(n => n.Id == notificationId);
+            if (notification != null)
+            {
+                notification.IsRead = true;
+                _db.Notifications.Update(notification);
+                await _db.SaveChangesAsync();
+            }
+            return Ok();
+        }
+
         [HttpPost("removeDriver")]
         public async Task<IActionResult> RemoveDriver([FromQuery] string transporterUserId, [FromQuery] string driverId)
         {
@@ -386,21 +408,35 @@ namespace navgatix.Controllers
         {
             if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
 
+            var validUserIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { userId };
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId || t.Id.ToString() == userId);
+            if (transporter != null)
+            {
+                if (!string.IsNullOrEmpty(transporter.UserId)) validUserIds.Add(transporter.UserId);
+                validUserIds.Add(transporter.Id.ToString());
+            }
+
             var notifications = await _db.Notifications
-                .Where(n => n.UserId == userId && n.IsRead != true)
+                .Where(n => validUserIds.Contains(n.UserId) && n.IsRead != true)
                 .OrderByDescending(n => n.CreatedAt)
                 .ToListAsync();
 
             var relationshipNotifications = notifications.Where(n =>
+                n.Message != null && (
                 n.Message.StartsWith("JOIN|") ||
                 n.Message.StartsWith("INVITE|") ||
                 n.Message.StartsWith("LEAVE|") ||
                 n.Message.StartsWith("SOS|") ||
                 n.Message.StartsWith("DRIVER_ACCEPT_ORDER|") ||
+                n.Message.StartsWith("DRIVER_REJECT_ORDER|") ||
+                n.Message.StartsWith("RIDE_CANCELLED_BY_DRIVER|") ||
+                n.Message.StartsWith("RIDE_CANCELLED_BY_CUSTOMER|") ||
+                n.Message.StartsWith("RIDE_CANCELLED_BY_TRANSPORTER|") ||
                 n.Message.StartsWith("VEHICLE_ASSIGN|") ||
+                n.Message.StartsWith("ASSIGN_SHIPMENT|") ||
                 n.Message.StartsWith("CHAT_MESSAGE|") ||
                 n.Message.StartsWith("CHAT_MESSAGE_DIRECT|")
-            ).ToList();
+            )).ToList();
 
             return Ok(relationshipNotifications);
         }
@@ -602,6 +638,69 @@ namespace navgatix.Controllers
             return Ok(new { message = "Shipment assigned to driver successfully. Awaiting driver acceptance." });
         }
 
+        [HttpPost("rejectTransporterBooking")]
+        public async Task<IActionResult> RejectTransporterBooking([FromQuery] string transporterUserId, [FromQuery] long bookingId)
+        {
+            if (string.IsNullOrEmpty(transporterUserId)) return BadRequest("transporterUserId is required.");
+
+            var claimNotifs = await _db.Notifications
+                .Where(n => n.Message != null && n.Message.StartsWith($"CLAIM|{bookingId}|"))
+                .ToListAsync();
+
+            foreach (var n in claimNotifs)
+            {
+                n.IsRead = true;
+            }
+
+            var assignNotifs = await _db.Notifications
+                .Where(n => n.Message != null && n.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|"))
+                .ToListAsync();
+
+            foreach (var n in assignNotifs)
+            {
+                n.IsRead = true;
+            }
+
+            var booking = await _db.Bookings.FirstOrDefaultAsync(b => b.Id == bookingId && b.IsDeleted != true);
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId || t.Id.ToString() == transporterUserId);
+            if (booking != null)
+            {
+                string tName = transporter?.CompanyName ?? "Transporter";
+                if (!string.IsNullOrWhiteSpace(booking.CustomerId))
+                {
+                    _db.Notifications.Add(new Notification
+                    {
+                        Id = Guid.NewGuid(),
+                        UserId = booking.CustomerId,
+                        Title = "Ride Cancelled by Transporter",
+                        Message = $"RIDE_CANCELLED_BY_TRANSPORTER|{bookingId}|{tName}",
+                        IsRead = false,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+
+                if (booking.DriverId.HasValue)
+                {
+                    var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == booking.DriverId.Value);
+                    if (driver != null && !string.IsNullOrWhiteSpace(driver.UserId))
+                    {
+                        _db.Notifications.Add(new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            UserId = driver.UserId,
+                            Title = "Ride Cancelled by Transporter",
+                            Message = $"RIDE_CANCELLED_BY_TRANSPORTER|{bookingId}|{tName}",
+                            IsRead = false,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+                }
+                await _db.SaveChangesAsync();
+            }
+
+            return Ok(new { message = "Transporter claim released successfully." });
+        }
+
         [HttpPost("acceptShipmentAsDriver")]
         public async Task<IActionResult> AcceptShipmentAsDriver([FromQuery] string driverUserId, [FromQuery] long bookingId)
         {
@@ -654,6 +753,20 @@ namespace navgatix.Controllers
                     booking.DriverId = driver.Id;
                     booking.CT_BookingStatus = satguruApp.Service.ViewModels.RideStatus.DriverAssigned;
                     booking.IsAvailable = false;
+
+                    // Mark assignment or ride request notifications as read for this driver
+                    var driverNotifs = await _db.Notifications
+                        .Where(n => n.UserId == driverUserId 
+                                 && (n.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|") 
+                                     || n.Message.StartsWith($"RIDE_REQUEST|{bookingId}") 
+                                     || n.Message.Contains($"|{bookingId}|") 
+                                     || n.Message.Contains($"|{bookingId}"))
+                                 && n.IsRead != true)
+                        .ToListAsync();
+                    foreach (var n in driverNotifs)
+                    {
+                        n.IsRead = true;
+                    }
 
                     var driverVehicleBooking = await _db.Bookings
                         .Where(b => b.DriverId == driver.Id 
@@ -774,6 +887,153 @@ namespace navgatix.Controllers
 
             await _db.SaveChangesAsync();
             return Ok();
+        }
+
+        [HttpGet("getDriverAssignedVehicle/{userId}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetDriverAssignedVehicle(string userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("userId is required.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == userId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver not found.");
+
+            // Find most recent active vehicle assignment from Bookings
+            var assignedBooking = await _db.Bookings
+                .Where(b => b.DriverId == driver.Id && b.VehicleId != null && b.IsDeleted != true && b.CT_BookingStatus != 6) // Exclude cancelled (6 = RideStatus.Cancelled)
+                .OrderByDescending(b => b.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            Vehicle vehicle = null;
+            if (assignedBooking != null && assignedBooking.VehicleId.HasValue)
+            {
+                vehicle = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == assignedBooking.VehicleId.Value && v.IsDeleted != true);
+            }
+
+            if (vehicle == null && !string.IsNullOrEmpty(userId))
+            {
+                vehicle = await _db.Vehicles.FirstOrDefaultAsync(v => (v.TransporterId == null || v.TransporterId == 0) && v.CreatedBy != null && v.CreatedBy.ToString() == userId && v.IsDeleted != true);
+            }
+
+            if (vehicle == null)
+            {
+                return Ok(new { isAssigned = false, vehicle = (object)null });
+            }
+
+            var vehType = await _db.CommonTypes.FirstOrDefaultAsync(ct => ct.Id == vehicle.CT_VehicleType);
+            var bodyType = await _db.CommonTypes.FirstOrDefaultAsync(ct => ct.Id == vehicle.CTBodyType);
+            var tyreType = await _db.CommonTypes.FirstOrDefaultAsync(ct => ct.Id == vehicle.CTTyreType);
+
+            return Ok(new
+            {
+                isAssigned = true,
+                vehicle = new
+                {
+                    id = vehicle.Id,
+                    vehicleName = vehicle.VehicleName ?? "Assigned Fleet Vehicle",
+                    registrationNumber = vehicle.VehicleNumber,
+                    vehicleType = vehType?.Name ?? "Truck",
+                    bodyType = bodyType?.Name,
+                    tyreType = tyreType?.Name,
+                    capacity = vehicle.CapacityTons,
+                    assignedAt = assignedBooking.CreatedAt
+                }
+            });
+        }
+
+        [HttpPost("toggleDriverOnlineStatus")]
+        public async Task<IActionResult> ToggleDriverOnlineStatus([FromQuery] string vehicleId, [FromQuery] bool isOnline, [FromQuery] string driverUserId)
+        {
+            if (!isOnline && !string.IsNullOrWhiteSpace(driverUserId))
+            {
+                var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+                if (driver != null)
+                {
+                    var activeDeliveryStatuses = new[]
+                    {
+                        (int)satguruApp.Service.ViewModels.RideStatus.DriverAssigned,
+                        (int)satguruApp.Service.ViewModels.RideStatus.DriverArriving,
+                        (int)satguruApp.Service.ViewModels.RideStatus.RideStarted
+                    };
+
+                    var hasActiveRide = await _db.Bookings.AnyAsync(b => b.DriverId == driver.Id && b.CT_BookingStatus.HasValue && activeDeliveryStatuses.Contains(b.CT_BookingStatus.Value) && b.IsDeleted != true);
+                    if (hasActiveRide)
+                    {
+                        return BadRequest(new { message = "Location tracking cannot be turned off while delivering an active shipment." });
+                    }
+                }
+            }
+
+            return Ok(new { success = true, isOnline = isOnline });
+        }
+
+        [HttpGet("getPendingVerifications")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetPendingVerifications()
+        {
+            var pendingDrivers = await (from d in _db.Drivers
+                                        join u in _db.Users on d.UserId equals u.Id
+                                        where (d.ProfileStatus == "PENDING" || d.ProfileStatus == "SUBMITTED") && d.IsDeleted != true
+                                        select new
+                                        {
+                                            id = d.Id.ToString(),
+                                            userId = d.UserId,
+                                            name = (u.FirstName + " " + u.LastName).Trim(),
+                                            email = u.Email,
+                                            phone = u.PhoneNumber,
+                                            role = "Driver",
+                                            profileStatus = d.ProfileStatus ?? "PENDING"
+                                        }).ToListAsync();
+
+            var pendingTransporters = await (from t in _db.TransporterDetails
+                                              join u in _db.Users on t.UserId equals u.Id
+                                              where (t.ProfileVerified == false || t.ProfileVerified == null) && t.IsDeleted != true
+                                              select new
+                                              {
+                                                  id = t.Id.ToString(),
+                                                  userId = t.UserId,
+                                                  name = t.CompanyName ?? (u.FirstName + " " + u.LastName).Trim(),
+                                                  email = u.Email,
+                                                  phone = u.PhoneNumber,
+                                                  role = "Transporter",
+                                                  profileStatus = "PENDING"
+                                              }).ToListAsync();
+
+            return Ok(new
+            {
+                drivers = pendingDrivers,
+                transporters = pendingTransporters
+            });
+        }
+
+        [HttpPost("approveProfile")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ApproveProfile([FromQuery] string userId, [FromQuery] string role, [FromQuery] string action)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("userId is required.");
+            var isApprove = string.Equals(action, "approve", StringComparison.OrdinalIgnoreCase);
+
+            if (string.Equals(role, "Driver", StringComparison.OrdinalIgnoreCase))
+            {
+                var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == userId && d.IsDeleted != true);
+                if (driver != null)
+                {
+                    driver.ProfileStatus = isApprove ? "APPROVED" : "REJECTED";
+                    _db.Drivers.Update(driver);
+                }
+            }
+            else if (string.Equals(role, "Transporter", StringComparison.OrdinalIgnoreCase))
+            {
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId && t.IsDeleted != true);
+                if (transporter != null)
+                {
+                    transporter.ProfileVerified = isApprove;
+                    _db.TransporterDetails.Update(transporter);
+                }
+            }
+
+            await _db.SaveChangesAsync();
+            return Ok(new { success = true, message = isApprove ? "Profile approved successfully!" : "Profile request rejected." });
         }
     }
 }

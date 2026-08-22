@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.StaticFiles;
@@ -19,6 +19,8 @@ namespace navgatix.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [RequestSizeLimit(long.MaxValue)]
+    [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue, ValueLengthLimit = int.MaxValue)]
     public class DocumentController : ControllerBase
     {
         private readonly IDocumentService _documentService;
@@ -75,6 +77,8 @@ namespace navgatix.Controllers
 
         [HttpPost("upload")]
         [AllowAnonymous]
+        [RequestSizeLimit(long.MaxValue)]
+        [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue, ValueLengthLimit = int.MaxValue)]
         [ProducesResponseType(201, Type = typeof(DocumentViewModel))]
         [ProducesResponseType(400)]
         [ProducesResponseType(403)]

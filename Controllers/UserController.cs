@@ -19,6 +19,8 @@ namespace navgatix.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [RequestSizeLimit(long.MaxValue)]
+    [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue, ValueLengthLimit = int.MaxValue)]
     public class UserController : ControllerBase
     {
         private readonly IUserService _userService;
@@ -174,6 +176,7 @@ namespace navgatix.Controllers
             model.TransporterId = null;
 
             var userResult = await _userInfoService.SaveAsync(new UserInfoViewModel { TransporterId = null, UserId = model.UserId, FirstName = model.FirstName, AccountTypeId = model.AccountTypeId, AppUserId = model.AppUserId.GetValueOrDefault(), AccountTypeName = model.AccountTypeName, Company = model.Company, DOB = model.DOB, Email = model.Email, GenderId = model.GenderId, FacebookLink = model.FacebookLink, PhoneNumber = model.PhoneNumber, LastName = model.LastName, LicenseExpiry = model.LicenseExpiry, LicenseNumber = model.LicenseNumber, MiddleName = model.MiddleName, Mobile = model.Mobile, Name = model.Name });
+            model.ProfileStatus = "PENDING";
             var result = await _transportService.SaveDriverAsync(model);
 
             if (originalTransporterId.HasValue && originalTransporterId.Value > 0)
@@ -561,6 +564,8 @@ namespace navgatix.Controllers
                     {
                         model.LicenseNumber = driverdetail.LicenseNumber;
                         model.LicenseExpiry = driverdetail.LicenseExpiry;
+                        model.BankAccountNumber = driverdetail.BankAccountNumber;
+                        model.IFSCCode = driverdetail.IFSCCode;
                     }
                     break;
                 case "Transporter":

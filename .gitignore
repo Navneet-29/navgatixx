@@ -64,7 +64,7 @@ project.fragment.lock.json
 artifacts/
 appsettings.Development.json
 appsettings.Production.json
-
+web.config
 
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt

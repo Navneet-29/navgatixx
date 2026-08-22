@@ -49,8 +49,8 @@ const LiveTrackingModal: React.FC<LiveTrackingModalProps> = ({ isOpen, onClose, 
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-[85vh] md:h-[600px] animate-in zoom-in-95 duration-200">
+        <div onClick={onClose} className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div onClick={(e) => e.stopPropagation()} className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-[85vh] md:h-[600px] animate-in zoom-in-95 duration-200">
 
                 {/* Map Section */}
                 <div className="flex-1 bg-slate-100 relative overflow-hidden h-1/2 md:h-full border-b md:border-b-0 md:border-r border-slate-200">

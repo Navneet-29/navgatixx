@@ -14,6 +14,8 @@ import Navbar from './components/Navbar';
 import { AuthProvider } from './context/AuthContext';
 import './index.css';
 
+import { AdminVerificationsPage } from './pages/admin/AdminVerificationsPage';
+
 function App() {
   return (
     <AuthProvider>
@@ -37,6 +39,7 @@ function App() {
           <Route path="/driver-dashboard" element={<DriverDashboard />} />
           <Route path="/customer-dashboard" element={<CustomerDashboard />} />
           <Route path="/customer-portal" element={<CustomerDashboard />} />
+          <Route path="/admin-verifications" element={<AdminVerificationsPage />} />
 
           {/* Catch all redirect to home */}
           <Route path="*" element={<Navigate to="/" replace />} />

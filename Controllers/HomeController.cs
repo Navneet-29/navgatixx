@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using navgatix.Models;
@@ -16,6 +17,11 @@ namespace navgatix.Controllers
 
         public IActionResult Index()
         {
+            var indexPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "index.html");
+            if (System.IO.File.Exists(indexPath))
+            {
+                return PhysicalFile(indexPath, "text/html");
+            }
             return View();
         }
 

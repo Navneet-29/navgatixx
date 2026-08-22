@@ -97,12 +97,23 @@ const DriverModal: React.FC<DriverModalProps> = ({ isOpen, onClose, onSuccess, t
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in duration-300">
-                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+        <div 
+            onClick={onClose}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/70 backdrop-blur-md overflow-y-auto"
+        >
+            <div 
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in duration-300 my-auto border border-slate-100"
+            >
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/90">
                     <h2 className="text-xl font-bold text-slate-900">Add Driver</h2>
-                    <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition">
-                        <X className="h-5 w-5" />
+                    <button 
+                        type="button"
+                        onClick={onClose}
+                        aria-label="Close modal"
+                        className="p-2.5 text-slate-700 hover:text-slate-950 bg-slate-200/80 hover:bg-slate-300 rounded-full transition-all cursor-pointer shadow-sm flex items-center justify-center"
+                    >
+                        <X className="h-5 w-5 stroke-[2.5]" />
                     </button>
                 </div>
                 <div className="p-8 space-y-6">

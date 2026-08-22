@@ -80,8 +80,8 @@ const VehicleModal: React.FC<VehicleModalProps> = ({ isOpen, onClose, onSuccess,
         e.preventDefault();
         setError('');
         
-        if (!vehicleName.trim() || !vehicleNumber.trim() || !ctVehicleType) {
-            setError('Vehicle name, number and type are mandatory.');
+        if (!vehicleName.trim() || !vehicleNumber.trim() || !rcNumber.trim() || !ctVehicleType) {
+            setError('Vehicle Name, Vehicle Number, RC Number, and Vehicle Type are compulsory.');
             return;
         }
 
@@ -128,17 +128,28 @@ const VehicleModal: React.FC<VehicleModalProps> = ({ isOpen, onClose, onSuccess,
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden animate-in fade-in zoom-in duration-300">
-                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+        <div 
+            onClick={onClose}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/70 backdrop-blur-md overflow-y-auto"
+        >
+            <div 
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden animate-in fade-in zoom-in duration-300 my-auto border border-slate-100"
+            >
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/90">
                     <div className="flex items-center gap-3">
                         <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center shadow-lg shadow-primary-500/20">
                             <Truck className="text-white h-5 w-5" />
                         </div>
                         <h2 className="text-xl font-bold text-slate-900">Add New Vehicle</h2>
                     </div>
-                    <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors">
-                        <X className="h-5 w-5" />
+                    <button 
+                        type="button"
+                        onClick={onClose}
+                        aria-label="Close modal"
+                        className="p-2.5 text-slate-700 hover:text-slate-950 bg-slate-200/80 hover:bg-slate-300 rounded-full transition-all cursor-pointer shadow-sm flex items-center justify-center"
+                    >
+                        <X className="h-5 w-5 stroke-[2.5]" />
                     </button>
                 </div>
 
@@ -236,13 +247,14 @@ const VehicleModal: React.FC<VehicleModalProps> = ({ isOpen, onClose, onSuccess,
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <label className="block text-sm font-bold text-slate-700 mb-2">RC Number <span className="text-slate-400 font-normal">(Optional)</span></label>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">RC Number <span className="text-red-500">*</span></label>
                                     <input
                                         type="text"
                                         value={rcNumber}
                                         onChange={(e) => setRcNumber(e.target.value.toUpperCase())}
                                         className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-900 focus:border-primary-500 outline-none uppercase transition-all"
-                                        placeholder="e.g. MH12AB1234"
+                                        placeholder="e.g. RC9876543210"
+                                        required
                                     />
                                 </div>
 

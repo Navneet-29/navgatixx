@@ -68,6 +68,33 @@ namespace satguruApp.Service.Services
                     driver.PhotoUrl = driverInfo.ProfilePic;
                     driver.IsDeleted = false;
                 }
+
+                var driverRecord = await _db.Drivers.FirstOrDefaultAsync(x => x.UserId == driverInfo.UserId);
+                if (driverRecord != null)
+                {
+                    var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driverRecord.TransporterId || t.UserId == driverInfo.UserId);
+                    if (transporter == null)
+                    {
+                        transporter = new TransporterDetail
+                        {
+                            UserId = driverInfo.UserId,
+                            CompanyName = driverRecord.Name ?? (driverInfo.FirstName + " " + driverInfo.LastName),
+                            IsDeleted = false
+                        };
+                        _db.TransporterDetails.Add(transporter);
+                        await _db.SaveChangesAsync();
+                        driverRecord.TransporterId = transporter.Id;
+                    }
+                    if (!string.IsNullOrEmpty(driverInfo.BankAccountNumber))
+                    {
+                        transporter.BankAccountNumber = driverInfo.BankAccountNumber;
+                    }
+                    if (!string.IsNullOrEmpty(driverInfo.IFSCCode))
+                    {
+                        transporter.IFSCCode = driverInfo.IFSCCode;
+                    }
+                }
+
                 return await _db.SaveChangesAsync();
             }
             return 0;
@@ -133,7 +160,9 @@ namespace satguruApp.Service.Services
                               UserId = drv.UserId,
                               LicenseExpiry = drv.LicenseExpiry,
                               LicenseNumber = drv.LicenseNumber,
-                              IsDeleted = drv.IsDeleted
+                              IsDeleted = drv.IsDeleted,
+                              BankAccountNumber = trans.BankAccountNumber,
+                              IFSCCode = trans.IFSCCode
                           }).FirstOrDefaultAsync();
         }
         public async Task<TransporterViewModel> GetTransporterDetails(string userId) {
@@ -240,14 +269,34 @@ namespace satguruApp.Service.Services
                                                         || b.CT_BookingStatus == RideStatus.RideStarted)
                                               select b).CountAsync();
 
-            // Today's Earnings (rides completed today)
+            var transporterDriverGuids = driversList.Select(x => x.d.Id).ToList();
+
+            // Today's Earnings = Sum of total today's earnings of all drivers in fleet
             var todaysFaresSum = await (from b in _db.Bookings
-                                        join v in _db.Vehicles on b.VehicleId equals v.Id
-                                        where v.TransporterId == transporter.Id 
+                                        where b.DriverId != null
+                                              && transporterDriverGuids.Contains(b.DriverId.Value)
                                               && b.CT_BookingStatus == RideStatus.RideCompleted 
                                               && b.IsDeleted != true
-                                              && b.CreatedAt >= todayUtc
+                                              && b.CreatedAt != null
+                                              && b.CreatedAt.Value.Date == todayUtc
                                         select b.FinalFare ?? b.EstimatedFare ?? 0).SumAsync();
+
+            var todaysEarningsNet = todaysFaresSum;
+
+            // Total Wallet Balance of all transporter's drivers
+            var driverUserIds = driversList.Select(x => x.d.UserId).ToList();
+            var totalWalletBalance = await _db.Wallets
+                .Where(w => driverUserIds.Contains(w.UserId))
+                .Select(w => w.Balance ?? 0)
+                .SumAsync();
+
+            // Resolved Rides (Completed rides total)
+            var resolvedRidesCount = await (from b in _db.Bookings
+                                            join v in _db.Vehicles on b.VehicleId equals v.Id
+                                            where v.TransporterId == transporter.Id 
+                                                  && b.CT_BookingStatus == RideStatus.RideCompleted 
+                                                  && b.IsDeleted != true
+                                            select b).CountAsync();
 
             // Pending Driver Relationship requests
             var pendingDriverRequestsCount = await _db.Notifications
@@ -257,22 +306,34 @@ namespace satguruApp.Service.Services
                                   || n.Message.StartsWith("INVITE|") 
                                   || n.Message.StartsWith("LEAVE|")));
 
-            // Maintain legacy properties alongside requested ones for safety
+            // Today's Total KM = Sum of total today's KM of all drivers in fleet
+            var todaysBookingsList = await (from b in _db.Bookings
+                                            where b.DriverId != null 
+                                                  && transporterDriverGuids.Contains(b.DriverId.Value) 
+                                                  && b.IsDeleted != true 
+                                                  && b.CreatedAt != null 
+                                                  && b.CreatedAt.Value.Date == todayUtc 
+                                                  && b.CT_BookingStatus != RideStatus.Cancelled
+                                            select new { b.PickupLat, b.PickupLng, b.DropLat, b.DropLng }).ToListAsync();
+
+            double todaysTotalKm = Math.Round(todaysBookingsList.Sum(b => CalculateDistanceKm(b.PickupLat, b.PickupLng, b.DropLat, b.DropLng)), 1);
+
             return new TransporterDashboardSummaryViewModel
             {
                 TotalFleet = fleetCount,
                 ActiveDrivers = driverCount,
                 OngoingTrips = activeShipmentsCount,
-                TotalRides = todaysShipmentsCount,
-                TotalEarnings = todaysFaresSum,
+                TotalRides = resolvedRidesCount,
+                TotalEarnings = totalWalletBalance,
                 PendingApprovals = pendingDriverRequestsCount,
 
-                TodaysEarnings = todaysFaresSum,
+                TodaysEarnings = todaysEarningsNet,
                 TodaysShipments = todaysShipmentsCount,
                 ActiveShipments = activeShipmentsCount,
                 OnlineDrivers = onlineDriversCount,
                 OfflineDrivers = offlineDriversCount,
-                PendingDriverRequests = pendingDriverRequestsCount
+                PendingDriverRequests = pendingDriverRequestsCount,
+                TodaysTotalKm = todaysTotalKm
             };
         }
 
@@ -360,7 +421,7 @@ namespace satguruApp.Service.Services
                 .ToListAsync();
 
             var driverIds = bookings.Where(b => b.DriverId.HasValue).Select(b => b.DriverId.Value).Distinct().ToList();
-            var drivers = await _db.Drivers.Where(d => driverIds.Contains(d.Id) && d.IsDeleted != true).ToListAsync();
+            var drivers = await _db.Drivers.Where(d => (d.TransporterId == transporter.Id || driverIds.Contains(d.Id)) && d.IsDeleted != true).ToListAsync();
             var driverLookup = drivers.ToDictionary(d => d.Id, d => d);
 
             var bookingsByVehicle = bookings
@@ -401,12 +462,18 @@ namespace satguruApp.Service.Services
                     .OrderByDescending(b => b.CreatedAt ?? DateTime.MinValue)
                     .FirstOrDefault();
 
-                Guid? driverId = activeBooking?.DriverId;
-                var driver = driverId.HasValue && driverLookup.TryGetValue(driverId.Value, out var driverDetail) ? driverDetail : null;
-                List<Booking> driverBookings = null;
-                if (driverId.HasValue)
+                Driver driver = null;
+                if (activeBooking?.DriverId != null)
                 {
-                    bookingsByDriver.TryGetValue(driverId.Value, out driverBookings);
+                    var targetId = activeBooking.DriverId.Value;
+                    var targetStr = targetId.ToString();
+                    driver = drivers.FirstOrDefault(d => d.Id == targetId || (d.UserId != null && d.UserId == targetStr));
+                }
+
+                List<Booking> driverBookings = null;
+                if (driver != null)
+                {
+                    bookingsByDriver.TryGetValue(driver.Id, out driverBookings);
                 }
                 var driverCompletedBookings = (driverBookings ?? new List<Booking>())
                     .Where(b => b.CT_BookingStatus == RideStatus.RideCompleted)
@@ -439,9 +506,11 @@ namespace satguruApp.Service.Services
                     }
                 }
 
-                var routeSummary = activeBooking != null
-                    ? $"{(string.IsNullOrWhiteSpace(activeBooking.PickupAddress) ? "Pickup" : activeBooking.PickupAddress)} -> {(string.IsNullOrWhiteSpace(activeBooking.DropAddress) ? "Drop" : activeBooking.DropAddress)}"
-                    : "Idle";
+                var displayBooking = activeBooking;
+
+                var routeSummary = displayBooking != null
+                    ? $"{(string.IsNullOrWhiteSpace(displayBooking.PickupAddress) ? "Pickup" : displayBooking.PickupAddress)} -> {(string.IsNullOrWhiteSpace(displayBooking.DropAddress) ? "Drop" : displayBooking.DropAddress)}"
+                    : "No Active Load";
 
                 var rawStatus = activeBooking != null
                     ? RideStatus.ToName(activeBooking.CT_BookingStatus)
@@ -451,6 +520,10 @@ namespace satguruApp.Service.Services
                 var vehicleTypeName = vehicle.CT_VehicleType.HasValue && commonTypeNames.TryGetValue(vehicle.CT_VehicleType.Value, out var typeName)
                     ? typeName
                     : string.Empty;
+
+                var driverTodayKm = Math.Round((driverBookings ?? new List<Booking>())
+                    .Where(b => b.CreatedAt.HasValue && b.CreatedAt.Value.Date == today && b.CT_BookingStatus != RideStatus.Cancelled)
+                    .Sum(b => CalculateDistanceKm(b.PickupLat, b.PickupLng, b.DropLat, b.DropLng)), 1);
 
                 fleet.Add(new TransporterFleetItemViewModel
                 {
@@ -464,7 +537,7 @@ namespace satguruApp.Service.Services
                     DriverUserId = driver?.UserId,
                     ActiveBookingId = activeBooking?.Id,
                     RideStatus = friendlyStatus,
-                    RouteSummary = activeBooking != null ? routeSummary : "Idle",
+                    RouteSummary = displayBooking != null ? routeSummary : "No Active Load",
                     VehicleCompletedRides = vehicleCompletedRides,
                     VehicleEarnings = vehicleEarnings,
                     DriverCompletedRides = driverCompletedRides,
@@ -473,10 +546,13 @@ namespace satguruApp.Service.Services
                     Longitude = longitude,
                     LiveUpdatedAt = liveEntry?.LastUpdated,
                     LiveStatus = liveStatus,
-                    EstimatedFare = activeBooking?.EstimatedFare,
-                    DropAddress = activeBooking?.DropAddress,
-                    GoodsType = activeBooking?.GoodsType,
+                    EstimatedFare = displayBooking?.EstimatedFare,
+                    FinalFare = displayBooking?.FinalFare,
+                    PickupAddress = displayBooking?.PickupAddress,
+                    DropAddress = displayBooking?.DropAddress,
+                    GoodsType = displayBooking?.GoodsType,
                     DailyEarnings = driverDailyEarnings,
+                    DriverTodayKm = driverTodayKm,
                 });
             }
 
@@ -512,7 +588,7 @@ namespace satguruApp.Service.Services
                 .Select(g => new { UserId = g.Key, AvgScore = g.Average(r => r.Score ?? 0) })
                 .ToDictionaryAsync(x => x.UserId, x => x.AvgScore);
 
-            // Fetch active bookings for these drivers to check "On Ride" status and assigned vehicle
+            // Fetch active bookings for these drivers to check "On Ride" status
             var activeBookings = await (from b in _db.Bookings
                                         join v in _db.Vehicles on b.VehicleId equals v.Id
                                         where b.DriverId != null 
@@ -523,6 +599,20 @@ namespace satguruApp.Service.Services
                                         select new { b.DriverId, b.Id, v.VehicleName, v.VehicleNumber }).ToListAsync();
 
             var activeBookingsDict = activeBookings
+                .GroupBy(x => x.DriverId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            // Fetch latest assigned vehicle for each driver (persists across idle & completed states)
+            var assignedVehicleBookings = await (from b in _db.Bookings
+                                                 join v in _db.Vehicles on b.VehicleId equals v.Id
+                                                 where b.DriverId != null
+                                                       && driverGuidIds.Contains(b.DriverId.Value)
+                                                       && b.CT_BookingStatus != RideStatus.Cancelled
+                                                       && b.IsDeleted != true
+                                                 orderby b.CreatedAt descending
+                                                 select new { b.DriverId, b.Id, v.VehicleName, v.VehicleNumber }).ToListAsync();
+
+            var assignedVehicleDict = assignedVehicleBookings
                 .GroupBy(x => x.DriverId)
                 .ToDictionary(g => g.Key, g => g.First());
 
@@ -537,6 +627,7 @@ namespace satguruApp.Service.Services
                 }
 
                 activeBookingsDict.TryGetValue(x.dvr.Id, out var activeRide);
+                assignedVehicleDict.TryGetValue(x.dvr.Id, out var assignedVehicle);
                 var hasActiveRide = activeRide != null;
 
                 var rideStatusStr = "Offline";
@@ -557,8 +648,8 @@ namespace satguruApp.Service.Services
                     ProfileStatus = x.dvr.ProfileStatus,
                     UserId = x.dvr.UserId,
                     IsOnline = x.userInfo.IsOnline,
-                    VehicleName = activeRide?.VehicleName,
-                    VehicleNumber = activeRide?.VehicleNumber,
+                    VehicleName = assignedVehicle?.VehicleName ?? activeRide?.VehicleName,
+                    VehicleNumber = assignedVehicle?.VehicleNumber ?? activeRide?.VehicleNumber,
                     DriverRating = Math.Round(rating, 1),
                     RideStatus = rideStatusStr,
                     ActiveBookingId = activeRide?.Id

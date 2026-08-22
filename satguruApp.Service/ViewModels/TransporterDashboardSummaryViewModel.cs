@@ -18,5 +18,6 @@ namespace satguruApp.Service.ViewModels
         public int OnlineDrivers { get; set; }
         public int OfflineDrivers { get; set; }
         public int PendingDriverRequests { get; set; }
+        public double TodaysTotalKm { get; set; }
     }
 }

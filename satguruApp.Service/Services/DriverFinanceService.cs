@@ -68,6 +68,10 @@ namespace satguruApp.Service.Services
 
             var wallet = await EnsureWalletAsync(driverUserId);
             summary.CurrentBalance = wallet.Balance ?? 0;
+            if (driver != null)
+            {
+                summary.HasTransactionPIN = !string.IsNullOrWhiteSpace(driver.TransactionPIN);
+            }
             return summary;
         }
 
@@ -133,6 +137,15 @@ namespace satguruApp.Service.Services
             if (balance < model.Amount)
             {
                 return Fail("Insufficient wallet balance.");
+            }
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(x => x.UserId == model.DriverUserId && x.IsDeleted != true);
+            if (driver != null && !string.IsNullOrWhiteSpace(driver.TransactionPIN))
+            {
+                if (string.IsNullOrWhiteSpace(model.TransactionPIN) || model.TransactionPIN != driver.TransactionPIN)
+                {
+                    return Fail("Invalid security PIN. Withdrawal denied.");
+                }
             }
 
             var payment = new Payment
@@ -286,6 +299,25 @@ namespace satguruApp.Service.Services
                 return null;
             }
             return marker.Substring("DRIVER_USER:".Length);
+        }
+
+        public async Task<DriverFinanceResultViewModel> SetTransactionPinAsync(string driverUserId, string pin)
+        {
+            if (string.IsNullOrWhiteSpace(driverUserId) || string.IsNullOrWhiteSpace(pin) || pin.Length < 4)
+            {
+                return Fail("Invalid driver user or PIN length.");
+            }
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(x => x.UserId == driverUserId && x.IsDeleted != true);
+            if (driver == null)
+            {
+                return Fail("Driver record not found.");
+            }
+
+            driver.TransactionPIN = pin;
+            await _db.SaveChangesAsync();
+
+            return Success("Transaction PIN updated successfully.", null, 0);
         }
 
         private static DriverFinanceResultViewModel Fail(string message) => new()

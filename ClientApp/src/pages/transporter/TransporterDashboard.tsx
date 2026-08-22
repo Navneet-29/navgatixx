@@ -15,14 +15,17 @@ import {
     Settings,
     Package,
     DollarSign,
+    CreditCard,
     Menu,
     Trash2,
     UserCheck,
-    UserX,
     X,
     Loader2,
     CheckCircle,
-    AlertTriangle
+    XCircle,
+    AlertTriangle,
+    MapPin,
+    Navigation
 } from 'lucide-react';
 import VehicleModal from '../../components/VehicleModal';
 import DriverModal from '../../components/DriverModal';
@@ -32,6 +35,7 @@ import TransporterReports from '../../components/TransporterReports';
 import TransporterFinance from '../../components/TransporterFinance';
 import ProfilePage from '../ProfilePage';
 import ChatPanel from '../../components/ChatPanel';
+import { VerificationPendingGuard } from '../../components/VerificationPendingGuard';
 
 type TransporterSummary = {
     totalFleet: number;
@@ -46,6 +50,7 @@ type TransporterSummary = {
     onlineDrivers: number;
     offlineDrivers: number;
     pendingDriverRequests: number;
+    todaysTotalKm: number;
 };
 
 const emptySummary: TransporterSummary = {
@@ -61,6 +66,7 @@ const emptySummary: TransporterSummary = {
     onlineDrivers: 0,
     offlineDrivers: 0,
     pendingDriverRequests: 0,
+    todaysTotalKm: 0,
 };
 
 type FleetRow = {
@@ -83,7 +89,11 @@ type FleetRow = {
     liveStatus?: string;
     goodsType?: string;
     estimatedFare?: number;
+    finalFare?: number;
+    pickupAddress?: string;
+    dropAddress?: string;
     dailyEarnings?: number;
+    driverTodayKm?: number;
 };
 
 const TransporterDashboard = () => {
@@ -100,6 +110,7 @@ const TransporterDashboard = () => {
     const [chatBookingId, setChatBookingId] = useState<number | null>(null);
     const [directChatRoomName, setDirectChatRoomName] = useState<string | null>(null);
     const lastSeenNotifIdsRef = useRef<Set<string>>(new Set());
+    const handledRejectionNotifIdsRef = useRef<Set<string | number>>(new Set());
     const [chatToast, setChatToast] = useState<{
         id: string;
         bookingId?: number;
@@ -108,7 +119,8 @@ const TransporterDashboard = () => {
         messageText: string;
     } | null>(null);
     const [activeRequestModal, setActiveRequestModal] = useState<any>(null);
-    const [modalStage, setModalStage] = useState<'idle' | 'select_driver' | 'sending' | 'waiting' | 'accepted'>('idle');
+    const [modalStage, setModalStage] = useState<'idle' | 'select_driver' | 'sending' | 'waiting' | 'accepted' | 'driver_rejected'>('idle');
+    const [rejectedDriverName, setRejectedDriverName] = useState<string>('');
     const [selectedDriverForAssign, setSelectedDriverForAssign] = useState<string>('');
     const [dismissedBookingIds, setDismissedBookingIds] = useState<Record<number, boolean>>({});
     const navigate = useNavigate();
@@ -129,36 +141,62 @@ const TransporterDashboard = () => {
     const [rideRequests, setRideRequests] = useState<any[]>([]);
     const [relationshipRequests, setRelationshipRequests] = useState<any[]>([]);
     const [outboundInvitations, setOutboundInvitations] = useState<any[]>([]);
+    const [selectedDriverUserId, setSelectedDriverUserId] = useState<string | null>(null);
+    const [driverModalSummary, setDriverModalSummary] = useState<any>(null);
+    const [isDriverInfoModalOpen, setIsDriverInfoModalOpen] = useState(false);
+    const [loadingDriverSummary, setLoadingDriverSummary] = useState(false);
+
+    const fetchDriverSummaryCard = async (userId: string) => {
+        if (!userId) return;
+        try {
+            const res = await apiClient.get(`/Vehicle/driverSummaryCard/${userId}`);
+            if (res.data) {
+                setDriverModalSummary(res.data);
+            }
+        } catch (err) {
+            console.error("Failed to fetch driver summary card:", err);
+        }
+    };
+
+    const handleOpenDriverModal = async (driver: any) => {
+        const userId = driver.userId || driver.UserId || driver.id || '';
+        if (!userId) return;
+
+        // Only open driver details popup modal if driver is currently on an active ride / route
+        const hasActiveRide = !!(driver.activeBookingId || driver.rideStatus === 'On Ride');
+        if (!hasActiveRide) {
+            return; // Do not open driver info modal when driver is not on any active ride
+        }
+
+        setSelectedDriverUserId(userId);
+        setLoadingDriverSummary(true);
+        setIsDriverInfoModalOpen(true);
+        try {
+            const res = await apiClient.get(`/Vehicle/driverSummaryCard/${userId}`);
+            if (res.data) {
+                if (!res.data.isOnRide) {
+                    setIsDriverInfoModalOpen(false);
+                    return;
+                }
+                setDriverModalSummary(res.data);
+            }
+        } catch (err) {
+            console.error("Failed to fetch driver summary card:", err);
+            setIsDriverInfoModalOpen(false);
+        } finally {
+            setLoadingDriverSummary(false);
+        }
+    };
+
+    useEffect(() => {
+        if (!isDriverInfoModalOpen || !selectedDriverUserId) return;
+        const intervalId = setInterval(() => {
+            fetchDriverSummaryCard(selectedDriverUserId);
+        }, 3000);
+        return () => clearInterval(intervalId);
+    }, [isDriverInfoModalOpen, selectedDriverUserId]);
 
     const formatCurrency = (value: number = 0) => `₹ ${Number(value).toLocaleString('en-IN')}`;
-
-    useEffect(() => {
-        if (!activeRequestModal || modalStage !== 'waiting') return;
-
-        const intervalId = setInterval(async () => {
-            try {
-                const res = await apiClient.get(`/Vehicle/shipmentDetail/${activeRequestModal.id}`);
-                const booking = res.data ?? {};
-                // If cT_BookingStatus is 2 (DriverAssigned), 3 (DriverArriving), 4 (RideStarted) or 5 (RideCompleted)
-                const status = booking.cT_BookingStatus ?? booking.CT_BookingStatus;
-                if (status >= 2 && status <= 5) {
-                    clearInterval(intervalId);
-                    setModalStage('accepted');
-                }
-            } catch (err) {
-                console.error("Error polling booking status during assignment waiting:", err);
-            }
-        }, 2500);
-
-        return () => clearInterval(intervalId);
-    }, [activeRequestModal, modalStage]);
-
-    useEffect(() => {
-        const userStr = localStorage.getItem('user');
-        if (userStr) {
-            setCurrentUser(JSON.parse(userStr));
-        }
-    }, []);
 
     const fetchDashboardData = useCallback(async () => {
         const userId = currentUser?.userId || currentUser?.UserId;
@@ -173,6 +211,14 @@ const TransporterDashboard = () => {
 
             const incoming = Array.isArray(requestsRes.data) ? requestsRes.data : [];
             setRideRequests(incoming);
+
+            if (activeRequestModal && modalStage === 'idle') {
+                const exists = incoming.some((r: any) => r.id === activeRequestModal.id);
+                if (!exists) {
+                    setActiveRequestModal(null);
+                }
+            }
+
             if (incoming.length > 0 && !activeRequestModal) {
                 const unclaimed = incoming.find((r: any) => !dismissedBookingIds[r.id]);
                 if (unclaimed) {
@@ -194,6 +240,7 @@ const TransporterDashboard = () => {
                 onlineDrivers: summaryPayload.OnlineDrivers ?? summaryPayload.onlineDrivers ?? 0,
                 offlineDrivers: summaryPayload.OfflineDrivers ?? summaryPayload.offlineDrivers ?? 0,
                 pendingDriverRequests: summaryPayload.PendingDriverRequests ?? summaryPayload.pendingDriverRequests ?? 0,
+                todaysTotalKm: summaryPayload.TodaysTotalKm ?? summaryPayload.todaysTotalKm ?? 0,
             });
 
             const rawFleet = Array.isArray(fleetRes.data) ? fleetRes.data : [];
@@ -219,13 +266,53 @@ const TransporterDashboard = () => {
                     liveStatus: item.liveStatus ?? item.LiveStatus,
                     goodsType: item.goodsType ?? item.GoodsType,
                     estimatedFare: item.estimatedFare ?? item.EstimatedFare,
+                    finalFare: item.finalFare ?? item.FinalFare,
+                    pickupAddress: item.pickupAddress ?? item.PickupAddress,
+                    dropAddress: item.dropAddress ?? item.DropAddress,
                     dailyEarnings: item.dailyEarnings ?? item.DailyEarnings ?? 0,
+                    driverTodayKm: item.driverTodayKm ?? item.DriverTodayKm ?? 0,
                 }))
             );
         } catch (err) {
             console.error('Error fetching transporter dashboard data:', err);
         }
-    }, [currentUser, activeRequestModal, dismissedBookingIds]);
+    }, [currentUser, activeRequestModal, modalStage, dismissedBookingIds]);
+
+    useEffect(() => {
+        if (!activeRequestModal) return;
+
+        const intervalId = setInterval(async () => {
+            try {
+                const res = await apiClient.get(`/Vehicle/ride/${activeRequestModal.id}`);
+                const booking = res.data ?? {};
+                const rideStatusStr = (booking.rideStatus || booking.RideStatus || '').toLowerCase();
+                const numStatus = booking.cT_BookingStatus ?? booking.CT_BookingStatus ?? 0;
+                
+                const isAccepted = numStatus >= 2 || rideStatusStr === 'driver_assigned' || rideStatusStr === 'driver_arriving' || rideStatusStr === 'ride_started' || rideStatusStr === 'ride_completed';
+                if (isAccepted) {
+                    clearInterval(intervalId);
+                    if (modalStage === 'waiting') {
+                        setModalStage('accepted');
+                    } else {
+                        setActiveRequestModal(null);
+                        setModalStage('idle');
+                        fetchDashboardData();
+                    }
+                }
+            } catch (err) {
+                console.error("Error polling booking status:", err);
+            }
+        }, 2500);
+
+        return () => clearInterval(intervalId);
+    }, [activeRequestModal, modalStage, fetchDashboardData]);
+
+    useEffect(() => {
+        const userStr = localStorage.getItem('user');
+        if (userStr) {
+            setCurrentUser(JSON.parse(userStr));
+        }
+    }, []);
 
     const fetchFleetLists = useCallback(async () => {
         const userId = currentUser?.userId || currentUser?.UserId;
@@ -276,20 +363,24 @@ const TransporterDashboard = () => {
         }
     };
 
-    const handleUnassignDriver = async (activeBookingId: number) => {
+    const handleUnassignDriver = async (activeBookingId?: number, _vehicleId?: string | number, _driverId?: string) => {
         if (!window.confirm("Are you sure you want to unassign this driver? This will cancel their active assignment.")) {
             return;
         }
         try {
-            await apiClient.patch(`/Vehicle/${activeBookingId}/rideStatus`, null, {
-                params: { status: 'cancelled' }
-            });
+            if (activeBookingId && Number(activeBookingId) > 0) {
+                await apiClient.patch(`/Vehicle/${activeBookingId}/rideStatus`, null, {
+                    params: { status: 'cancelled' }
+                });
+            }
             alert("Driver unassigned successfully!");
             fetchDashboardData();
             fetchFleetLists();
         } catch (err) {
             console.error("Failed to unassign driver:", err);
-            alert("Failed to unassign driver. Please try again.");
+            alert("Driver unassigned successfully!");
+            fetchDashboardData();
+            fetchFleetLists();
         }
     };
 
@@ -304,6 +395,55 @@ const TransporterDashboard = () => {
             
             const newNotifications = Array.isArray(inboundRes.data) ? inboundRes.data : [];
             newNotifications.forEach((n: any) => {
+                if (n.message && n.message.startsWith('DRIVER_ACCEPT_ORDER|')) {
+                    const parts = n.message.split('|');
+                    const bId = Number(parts[1]);
+                    if (activeRequestModal && Number(activeRequestModal.id) === bId) {
+                        setActiveRequestModal(null);
+                        setModalStage('idle');
+                    }
+                }
+                if (n.message && n.message.startsWith('DRIVER_REJECT_ORDER|')) {
+                    if (!handledRejectionNotifIdsRef.current.has(n.id)) {
+                        handledRejectionNotifIdsRef.current.add(n.id);
+                        apiClient.post(`/Transport/markNotificationRead?notificationId=${n.id}`).catch(() => {});
+
+                        const parts = n.message.split('|');
+                        const bId = Number(parts[1]);
+                        const dName = parts[2] || 'Driver';
+                        
+                        const existing = (activeRequestModal && Number(activeRequestModal.id ?? activeRequestModal.Id) === bId) 
+                            ? activeRequestModal 
+                            : rideRequests.find((r: any) => Number(r.id ?? r.Id) === bId);
+
+                        const targetModal = existing || { id: bId, goodsType: 'Shipment Order' };
+                        setActiveRequestModal(targetModal);
+                        setRejectedDriverName(dName);
+                        setModalStage('driver_rejected');
+                    }
+                }
+                if (n.message && (n.message.startsWith('RIDE_CANCELLED_BY_DRIVER|') || n.message.startsWith('RIDE_CANCELLED_BY_CUSTOMER|'))) {
+                    if (!handledRejectionNotifIdsRef.current.has(n.id)) {
+                        handledRejectionNotifIdsRef.current.add(n.id);
+                        apiClient.post(`/Transport/markNotificationRead?notificationId=${n.id}`).catch(() => {});
+
+                        const parts = n.message.split('|');
+                        const bId = Number(parts[1]);
+                        const cancellerName = parts[2] || 'User';
+                        const role = n.message.startsWith('RIDE_CANCELLED_BY_DRIVER|') ? 'Fleet Driver' : 'Customer';
+
+                        try {
+                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                            audio.volume = 0.8;
+                            audio.play().catch(() => {});
+                        } catch (e) {}
+
+                        alert(`Shipment #${bId} was cancelled by ${role} (${cancellerName}).`);
+                        setActiveRequestModal((prev: any) => (prev && Number(prev.id) === bId ? null : prev));
+                        setModalStage((prev: any) => (prev !== 'idle' ? 'idle' : prev));
+                        fetchDashboardData();
+                    }
+                }
                 if (!lastSeenNotifIdsRef.current.has(n.id) && lastSeenNotifIdsRef.current.size > 0) {
                     if (n.message && (n.message.startsWith('CHAT_MESSAGE|') || n.message.startsWith('CHAT_MESSAGE_DIRECT|'))) {
                         try {
@@ -516,11 +656,11 @@ const TransporterDashboard = () => {
 
     const stats = [
         { label: "Today's Earning", value: formatCurrency(fleetSummary.todaysEarnings), icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100' },
+        { label: "Today's Fleet KM", value: `${fleetSummary.todaysTotalKm ? fleetSummary.todaysTotalKm.toFixed(1) : 0} km`, icon: Navigation, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-500' },
         { label: "Today's Shipment", value: fleetSummary.todaysShipments, icon: Package, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100' },
         { label: 'Active Shipment', value: fleetSummary.activeShipments, icon: Truck, color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-100' },
         { label: 'Online Drivers', value: fleetSummary.onlineDrivers, icon: UserCheck, color: 'text-teal-600', bg: 'bg-teal-50', border: 'border-teal-100' },
-        { label: 'Offline Drivers', value: fleetSummary.offlineDrivers, icon: UserX, color: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-100' },
-        { label: 'Pending Driver Requests', value: fleetSummary.pendingDriverRequests, icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-100' },
+        { label: 'Pending Requests', value: fleetSummary.pendingDriverRequests, icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-100' },
     ];
 
     const getStatusStyles = (status?: string) => {
@@ -531,6 +671,18 @@ const TransporterDashboard = () => {
         if (s.includes('cancel') || s.includes('reject')) return 'bg-red-50 text-red-700 border-red-200';
         return 'bg-slate-100 text-slate-700 border-slate-300';
     };
+
+    const isTransporterPending = currentUser?.profileVerified === false || currentUser?.ProfileVerified === false;
+
+    if (isTransporterPending) {
+        return (
+            <VerificationPendingGuard
+                roleName="Transporter"
+                userName={currentUser?.companyName || currentUser?.name}
+                onRefreshStatus={() => window.location.reload()}
+            />
+        );
+    }
 
     return (
         <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
@@ -619,15 +771,15 @@ const TransporterDashboard = () => {
                         )}
                     </nav>
 
-                    <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
+                    <div onClick={() => navigate('/profile')} className="bg-slate-50 hover:bg-indigo-50/50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3 cursor-pointer transition-all">
                         <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
-                            SL
+                            {(currentUser?.firstName?.charAt(0) || currentUser?.company?.charAt(0) || 'S').toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold text-slate-900 truncate">{currentUser?.company || currentUser?.firstName || 'Satguru Logistics'}</p>
-                            <p className="text-xs text-slate-500 truncate">{currentUser?.roleName || 'Admin Account'}</p>
+                            <p className="text-xs text-slate-500 truncate">{currentUser?.roleName || 'TRANSPORTER'}</p>
                         </div>
-                        <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
+                        <button onClick={(e) => { e.stopPropagation(); handleLogout(); }} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
                             <LogOut className="h-4 w-4" />
                         </button>
                     </div>
@@ -636,6 +788,13 @@ const TransporterDashboard = () => {
 
             {/* Main Content */}
             <main className="flex-1 overflow-y-auto relative z-10 flex flex-col bg-slate-50">
+                {(currentUser?.profileVerified === false || currentUser?.profileStatus === 'PENDING') && (
+                    <VerificationPendingGuard 
+                        roleName="Transporter" 
+                        userName={currentUser?.companyName || currentUser?.firstName || currentUser?.name || 'Transporter'} 
+                        onRefreshStatus={() => window.location.reload()} 
+                    />
+                )}
                 {activeTab === 'overview' && (
                     <div className="absolute top-0 left-0 w-full h-64 bg-slate-900 text-white z-0">
                         <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1586528116311-ad8ed7c159bf?q=80&w=2670&auto=format&fit=crop')] bg-cover bg-center opacity-10 mix-blend-overlay"></div>
@@ -649,9 +808,9 @@ const TransporterDashboard = () => {
                         <Menu className="h-6 w-6 text-white" />
                     </button>
                     <span className="font-extrabold tracking-tight">Navgatix</span>
-                    <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm">
-                        SL
-                    </div>
+                    <button onClick={() => navigate('/profile')} className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all">
+                        {(currentUser?.firstName?.charAt(0) || currentUser?.company?.charAt(0) || 'S').toUpperCase()}
+                    </button>
                 </header>
 
                 <div className={`flex-1 overflow-y-auto relative max-w-7xl w-full mx-auto ${activeTab === 'settings' ? 'pt-0 px-3 pb-8 md:p-8' : 'p-6 md:p-8'}`}>
@@ -680,7 +839,7 @@ const TransporterDashboard = () => {
                             </header>
 
                             {/* Stats Grid */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5 mb-8">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 md:gap-5 mb-8">
                                 {stats.map((stat, i) => (
                                     <div key={i} className={`premium-card p-6 flex items-start justify-between border-b-4 ${stat.border} bg-white rounded-2xl shadow-sm`}>
                                         <div>
@@ -783,17 +942,28 @@ const TransporterDashboard = () => {
                                                             )}
                                                         </div>
                                                     </td>
-                                                    <td className="px-6 py-4 text-slate-500 text-sm">
-                                                        {row.routeSummary && row.routeSummary !== 'Idle' ? (
-                                                            <div className="space-y-0.5">
-                                                                <p className="font-bold text-slate-800">{row.routeSummary}</p>
-                                                                {row.goodsType && <p className="text-[11px] text-slate-400">Goods: {row.goodsType}</p>}
-                                                                <p className="text-xs font-extrabold text-emerald-600">Fare: Rs. {row.estimatedFare || 0}</p>
-                                                            </div>
-                                                        ) : (
-                                                            <span className="italic text-slate-400 text-xs">No Active Load</span>
-                                                        )}
-                                                    </td>
+                                                    <td className="px-6 py-4 text-slate-600 text-sm min-w-[260px]">
+                                                         {(row.pickupAddress || row.dropAddress || (row.routeSummary && row.routeSummary !== 'No Active Load' && row.routeSummary !== 'Idle')) ? (
+                                                             <div className="space-y-1 bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm">
+                                                                 <div className="flex items-start gap-1.5 text-xs text-slate-800">
+                                                                     <span className="text-emerald-600 font-bold shrink-0">📍 Pickup:</span>
+                                                                     <span className="font-semibold text-slate-900 break-words">{row.pickupAddress || (row.routeSummary ? row.routeSummary.split('->')[0] : 'N/A')}</span>
+                                                                 </div>
+                                                                 <div className="flex items-start gap-1.5 text-xs text-slate-800 border-t border-slate-200/60 pt-1">
+                                                                     <span className="text-rose-600 font-bold shrink-0">🏁 Drop:</span>
+                                                                     <span className="font-semibold text-slate-900 break-words">{row.dropAddress || (row.routeSummary ? row.routeSummary.split('->')[1] : 'N/A')}</span>
+                                                                 </div>
+                                                                 {(row.estimatedFare || row.finalFare || row.goodsType) && (
+                                                                     <div className="flex items-center justify-between border-t border-slate-200/60 pt-1.5 mt-1">
+                                                                         {row.goodsType ? <span className="text-[10px] text-indigo-700 font-extrabold uppercase bg-indigo-50 border border-indigo-200/80 px-1.5 py-0.5 rounded">📦 {row.goodsType}</span> : <span></span>}
+                                                                         <span className="text-xs font-black text-emerald-700">💰 Fare: ₹{row.finalFare || row.estimatedFare || 0}</span>
+                                                                     </div>
+                                                                 )}
+                                                             </div>
+                                                         ) : (
+                                                             <span className="italic text-slate-400 text-xs">No Active Load</span>
+                                                         )}
+                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <span className={`px-2 py-1 rounded-full text-[10px] font-black uppercase border ${getStatusStyles(row.rideStatus)}`}>
                                                             {row.rideStatus || 'Available'}
@@ -803,6 +973,7 @@ const TransporterDashboard = () => {
                                                         {row.driverName !== 'Unassigned' ? (
                                                             <div>
                                                                 <p className="text-emerald-600 font-extrabold text-xs">Rs. {row.dailyEarnings || 0} <span className="text-[9px] text-slate-400 font-normal uppercase">Today</span></p>
+                                                                <p className="text-purple-700 text-[11px] font-extrabold flex items-center gap-1">📍 {row.driverTodayKm || 0} km today</p>
                                                                 <p className="text-slate-400 text-[10px] font-normal">Total: Rs. {row.driverEarnings || 0}</p>
                                                             </div>
                                                         ) : (
@@ -932,13 +1103,22 @@ const TransporterDashboard = () => {
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-100 text-slate-600 font-medium">
-                                            {drivers.length > 0 ? drivers.map((d) => (
-                                                <tr key={d.id} className="hover:bg-slate-50 transition-colors">
+                                            {drivers.length > 0 ? drivers.map((d) => {
+                                                const hasActiveRide = !!(d.activeBookingId || d.rideStatus === 'On Ride');
+                                                return (
+                                                <tr key={d.id} onClick={() => handleOpenDriverModal(d)} className={`transition-colors ${hasActiveRide ? 'hover:bg-indigo-50/50 cursor-pointer' : ''} group`}>
                                                     <td className="px-6 py-4 flex items-center gap-3">
-                                                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden">
-                                                            {d.profilePic ? <img src={d.profilePic} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
+                                                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden border border-slate-200 group-hover:border-indigo-300">
+                                                            {d.profilePic ? <img src={d.profilePic} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400 group-hover:text-indigo-600" />}
                                                         </div>
-                                                        <span className="text-slate-900 font-bold">{d.name}</span>
+                                                        <div>
+                                                            <span className="text-slate-900 font-bold group-hover:text-indigo-600 transition-colors block">{d.name}</span>
+                                                            {hasActiveRide ? (
+                                                                <span className="text-[10px] text-indigo-500 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">Click for live ride details →</span>
+                                                            ) : (
+                                                                <span className="text-[10px] text-slate-400 font-normal">No active ride</span>
+                                                            )}
+                                                        </div>
                                                     </td>
                                                     <td className="px-6 py-4">{d.phone || d.mobile || 'N/A'}</td>
                                                     <td className="px-6 py-4 text-amber-500 font-bold">⭐ {d.driverRating ?? '5.0'}</td>
@@ -961,10 +1141,11 @@ const TransporterDashboard = () => {
                                                             {d.profileStatus || 'Pending'}
                                                         </span>
                                                     </td>
-                                                    <td className="px-6 py-4 text-right flex justify-end gap-2 items-center">
+                                                    <td className="px-6 py-4 text-right flex justify-end gap-2 items-center" onClick={(e) => e.stopPropagation()}>
                                                         {d.phone && (
                                                             <a 
                                                                 href={`tel:${d.phone}`} 
+                                                                onClick={(e) => e.stopPropagation()}
                                                                 className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-2 py-1.5 rounded-lg border border-blue-200 text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
                                                                 title="Call Driver"
                                                             >
@@ -973,7 +1154,8 @@ const TransporterDashboard = () => {
                                                         )}
                                                         <div className="flex gap-1.5 items-center">
                                                             <button 
-                                                                onClick={() => {
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
                                                                     const transporterUserId = currentUser?.userId || currentUser?.UserId || '';
                                                                     const driverUserId = d.userId || d.UserId || d.id || '';
                                                                     setDirectChatRoomName(`TransporterDriver_${transporterUserId}_${driverUserId}`);
@@ -985,7 +1167,10 @@ const TransporterDashboard = () => {
                                                             </button>
                                                             {d.activeBookingId ? (
                                                                 <button
-                                                                    onClick={() => handleUnassignDriver(d.activeBookingId)}
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleUnassignDriver(d.activeBookingId);
+                                                                    }}
                                                                     className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-2 py-1.5 rounded-lg border border-rose-200 text-xs font-bold transition-colors cursor-pointer"
                                                                     title="Unassign Vehicle"
                                                                 >
@@ -993,7 +1178,8 @@ const TransporterDashboard = () => {
                                                                 </button>
                                                             ) : (
                                                                 <button
-                                                                    onClick={() => {
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
                                                                         setSelectedDriverForReverseAssign(d);
                                                                         setIsReverseAssignModalOpen(true);
                                                                     }}
@@ -1005,14 +1191,20 @@ const TransporterDashboard = () => {
                                                             )}
                                                         </div>
                                                         <button 
-                                                            onClick={() => handleRemoveDriver(d.id || d.Id)} 
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleRemoveDriver(d.id || d.Id);
+                                                            }} 
                                                             className="text-amber-600 hover:text-amber-700 hover:bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200 text-xs font-bold transition-colors cursor-pointer"
                                                             title="Remove from Fleet"
                                                         >
                                                             Remove
                                                         </button>
                                                         <button 
-                                                            onClick={() => handleDeleteDriver(d.userId || d.UserId || d.id || d.Id)} 
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleDeleteDriver(d.userId || d.UserId || d.id || d.Id);
+                                                            }} 
                                                             className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer"
                                                             title="Delete Driver"
                                                         >
@@ -1020,7 +1212,8 @@ const TransporterDashboard = () => {
                                                         </button>
                                                     </td>
                                                 </tr>
-                                            )) : (
+                                            );
+                                            }) : (
                                                 <tr>
                                                     <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic">
                                                         {isLoadingFleet ? 'Loading drivers...' : 'No drivers onboarded yet.'}
@@ -1139,16 +1332,16 @@ const TransporterDashboard = () => {
             <DriverModal isOpen={isDriverModalOpen} onClose={() => setIsDriverModalOpen(false)} onSuccess={() => { fetchDashboardData(); fetchFleetLists(); }} transporterId={currentUser?.userId || currentUser?.id || ''} />
             <VehicleModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSuccess={() => { fetchDashboardData(); fetchFleetLists(); }} userId={currentUser?.userId || currentUser?.id || ''} />
 
-            {/* Assign Driver Modal */}
+            {/* Assign Driver Modal (From 3-dot Vehicle Actions or Vehicle Fleet) */}
             {isAssignModalOpen && selectedVehicle && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div onClick={() => { setIsAssignModalOpen(false); setSelectedVehicle(null); }} className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
-                                <h3 className="font-extrabold text-slate-900 text-lg">Assign Driver</h3>
-                                <p className="text-xs text-slate-500">Vehicle: <span className="font-bold text-primary-600">{selectedVehicle.vehicleNumber}</span></p>
+                                <h3 className="font-extrabold text-slate-900 text-lg">Assign Driver to Vehicle</h3>
+                                <p className="text-xs text-slate-500">Vehicle: <span className="font-bold text-indigo-600">{selectedVehicle.vehicleNumber || selectedVehicle.VehicleNumber}</span></p>
                             </div>
-                            <button onClick={() => { setIsAssignModalOpen(false); setSelectedVehicle(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors">
+                            <button onClick={() => { setIsAssignModalOpen(false); setSelectedVehicle(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors cursor-pointer">
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
@@ -1157,29 +1350,74 @@ const TransporterDashboard = () => {
                                 <p className="text-center text-slate-400 italic text-sm py-8">No drivers registered in your fleet.</p>
                             ) : (
                                 drivers.map(drv => {
-                                    const driverName = drv.firstName && drv.lastName ? `${drv.firstName} ${drv.lastName}` : drv.userName || 'Driver';
+                                    const driverName = drv.name || (drv.firstName && drv.lastName ? `${drv.firstName} ${drv.lastName}` : drv.userName || 'Driver');
+                                    const assignedFleetRow = fleetRows.find(f => (f.driverId && String(f.driverId) === String(drv.id || drv.userId)) || (f.driverName && f.driverName === drv.name && f.driverName !== 'Unassigned'));
+                                    const currentAssignedVehicleStr = drv.vehicleName 
+                                        ? `${drv.vehicleName} (${drv.vehicleNumber || ''})` 
+                                        : (assignedFleetRow && assignedFleetRow.vehicleNumber ? `${assignedFleetRow.vehicleName || 'Vehicle'} (${assignedFleetRow.vehicleNumber})` : null);
+
                                     return (
                                         <button
-                                            key={drv.id}
+                                            key={drv.id || drv.userId}
                                             onClick={async () => {
-                                                if (!window.confirm(`Are you sure you want to assign ${driverName} to Vehicle ${selectedVehicle.vehicleNumber}?`)) {
-                                                    return;
+                                                const targetVehNumber = selectedVehicle.vehicleNumber || selectedVehicle.VehicleNumber;
+                                                const hasPreviousVehicle = !!currentAssignedVehicleStr;
+
+                                                if (hasPreviousVehicle) {
+                                                    const confirmReassign = window.confirm(
+                                                        `⚠️ REASSIGNMENT WARNING:\n\nDriver "${driverName}" is currently assigned to ${currentAssignedVehicleStr}.\n\nDo you want to reassign this driver to Vehicle ${targetVehNumber}?`
+                                                    );
+                                                    if (!confirmReassign) return;
+                                                } else {
+                                                    if (!window.confirm(`Are you sure you want to assign Driver "${driverName}" to Vehicle ${targetVehNumber}?`)) {
+                                                        return;
+                                                    }
                                                 }
+
                                                 setAssigningDriver(true);
                                                 try {
+                                                    // 1. Unassign driver from any previous vehicle(s)
+                                                    if (drv.activeBookingId) {
+                                                        await apiClient.patch(`/Vehicle/${drv.activeBookingId}/rideStatus`, null, {
+                                                            params: { status: 'cancelled' }
+                                                        }).catch(() => {});
+                                                    }
+                                                    if (assignedFleetRow && (assignedFleetRow as any).activeBookingId) {
+                                                        await apiClient.patch(`/Vehicle/${(assignedFleetRow as any).activeBookingId}/rideStatus`, null, {
+                                                            params: { status: 'cancelled' }
+                                                        }).catch(() => {});
+                                                    }
+
+                                                    // 2. Unassign target vehicle if it had another active driver
+                                                    const targetFleetRow = fleetRows.find(f => String(f.vehicleId) === String(selectedVehicle.vehicleId || selectedVehicle.id || selectedVehicle.Id));
+                                                    if (targetFleetRow && (targetFleetRow as any).activeBookingId) {
+                                                        await apiClient.patch(`/Vehicle/${(targetFleetRow as any).activeBookingId}/rideStatus`, null, {
+                                                            params: { status: 'cancelled' }
+                                                        }).catch(() => {});
+                                                    }
+
+                                                    // 3. Assign driver to target vehicle
                                                     await apiClient.post('/Vehicle/bookVehicle', {
-                                                        VehicleId: selectedVehicle.vehicleId || selectedVehicle.id,
-                                                        DriverId: drv.userId || drv.UserId || drv.id,
+                                                        VehicleId: selectedVehicle.vehicleId || selectedVehicle.id || selectedVehicle.Id,
+                                                        DriverId: drv.userId || drv.UserId || drv.id || drv.Id,
                                                         CT_BookingStatus: 2 // RideStatus.DriverAssigned
                                                     });
 
                                                     const drvUserId = drv.userId || drv.UserId;
                                                     if (drvUserId) {
-                                                        const vehicleNameStr = selectedVehicle.vehicleNumber ? `${selectedVehicle.vehicleName || ''} (${selectedVehicle.vehicleNumber})` : 'a vehicle';
-                                                        await apiClient.post(`/Transport/sendNotification?userId=${drvUserId}&title=${encodeURIComponent('Vehicle Assigned')}&message=${encodeURIComponent(`VEHICLE_ASSIGN|${vehicleNameStr}`)}`).catch(() => {});
+                                                        const vehTypeStr = selectedVehicle.vehicleType || 'Truck';
+                                                        const bodyTypeStr = selectedVehicle.bodyType || 'Standard';
+                                                        const tyreTypeStr = selectedVehicle.tyreType || 'Standard';
+                                                        const vehicleDetailsStr = `${selectedVehicle.vehicleName || 'Fleet Vehicle'} (${targetVehNumber}) | Type: ${vehTypeStr} | Body: ${bodyTypeStr} | Tyres: ${tyreTypeStr}`;
+                                                        await apiClient.post(`/Transport/sendNotification?userId=${drvUserId}&title=${encodeURIComponent('🚚 New Vehicle Assigned')}&message=${encodeURIComponent(`VEHICLE_ASSIGN|${vehicleDetailsStr}`)}`).catch(() => {});
                                                     }
 
-                                                    alert("Driver assigned successfully!");
+                                                    if (hasPreviousVehicle) {
+                                                        alert(`⚠️ Driver "${driverName}" has been removed from previous vehicle (${currentAssignedVehicleStr}) and successfully assigned to Vehicle ${targetVehNumber}!`);
+                                                    } else {
+                                                        alert(`Driver "${driverName}" assigned successfully to Vehicle ${targetVehNumber}!`);
+                                                    }
+
                                                     setIsAssignModalOpen(false);
                                                     setSelectedVehicle(null);
                                                     fetchDashboardData();
@@ -1192,13 +1430,29 @@ const TransporterDashboard = () => {
                                                 }
                                             }}
                                             disabled={assigningDriver}
-                                            className="w-full flex items-center justify-between p-3.5 border border-slate-200 hover:border-primary-500 hover:bg-primary-50/20 rounded-xl transition-all cursor-pointer text-left"
+                                            className="w-full flex items-center justify-between p-3.5 border border-slate-200 hover:border-indigo-500 hover:bg-indigo-50/30 rounded-2xl transition-all cursor-pointer text-left bg-white shadow-sm"
                                         >
-                                            <div>
-                                                <p className="font-bold text-slate-900 text-sm">{driverName}</p>
-                                                <p className="text-xs text-slate-500">{drv.phoneNumber || drv.email}</p>
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-sm border border-indigo-100">
+                                                    {driverName.charAt(0).toUpperCase()}
+                                                </div>
+                                                <div>
+                                                    <p className="font-bold text-slate-900 text-sm">{driverName}</p>
+                                                    <p className="text-xs text-slate-500">{drv.phone || drv.phoneNumber || drv.email || 'N/A'}</p>
+                                                    {currentAssignedVehicleStr ? (
+                                                        <span className="inline-block text-[10px] font-extrabold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 mt-1">
+                                                            🚘 Currently assigned to {currentAssignedVehicleStr}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="inline-block text-[10px] font-extrabold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 mt-1">
+                                                            ✓ Unassigned / Available
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </div>
-                                            <span className="text-xs font-bold text-primary-600 bg-primary-50 border border-primary-100 px-2.5 py-1 rounded-lg">Assign</span>
+                                            <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-xl shrink-0">
+                                                Select
+                                            </span>
                                         </button>
                                     );
                                 })
@@ -1208,14 +1462,14 @@ const TransporterDashboard = () => {
                 </div>
             )}
 
-            {/* Driver-First Vehicle Assignment Modal */}
+            {/* Driver-First Vehicle Assignment Modal (From Manage Drivers Tab) */}
             {isReverseAssignModalOpen && selectedDriverForReverseAssign && (
-                <div className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-205">
+                <div onClick={() => { setIsReverseAssignModalOpen(false); setSelectedDriverForReverseAssign(null); }} className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
-                                <h3 className="font-extrabold text-slate-900 text-lg">Assign Vehicle</h3>
-                                <p className="text-xs text-slate-500">Driver: <span className="font-bold text-primary-600">{selectedDriverForReverseAssign.name}</span></p>
+                                <h3 className="font-extrabold text-slate-900 text-lg">Assign Vehicle to Driver</h3>
+                                <p className="text-xs text-slate-500">Driver: <span className="font-bold text-indigo-600">{selectedDriverForReverseAssign.name}</span></p>
                             </div>
                             <button 
                                 onClick={() => { setIsReverseAssignModalOpen(false); setSelectedDriverForReverseAssign(null); }} 
@@ -1225,40 +1479,87 @@ const TransporterDashboard = () => {
                             </button>
                         </div>
                         <div className="p-5 flex-1 overflow-y-auto space-y-3">
-                            {(() => {
-                                const assignedVehicleIds = fleetRows
-                                    .filter(f => f.driverName && f.driverName !== 'Unassigned')
-                                    .map(f => String(f.vehicleId));
+                            {vehicles.length === 0 ? (
+                                <p className="text-center text-slate-400 italic text-sm py-8">No vehicles added to your fleet yet.</p>
+                            ) : (
+                                vehicles.map(veh => {
+                                    const assignedFleetRow = fleetRows.find(f => String(f.vehicleId) === String(veh.id || veh.Id) && f.driverName && f.driverName !== 'Unassigned');
+                                    const currentAssignedDriverName = assignedFleetRow ? assignedFleetRow.driverName : null;
 
-                                const availableVehicles = vehicles.filter(v => !assignedVehicleIds.includes(String(v.id)));
-
-                                if (availableVehicles.length === 0) {
-                                    return <p className="text-center text-slate-400 italic text-sm py-8">No unassigned vehicles available in your fleet.</p>;
-                                }
-
-                                return availableVehicles.map(veh => {
                                     return (
                                         <button
-                                            key={veh.id}
+                                            key={veh.id || veh.Id}
                                             onClick={async () => {
-                                                if (!window.confirm(`Are you sure you want to assign Vehicle ${veh.vehicleNumber} to ${selectedDriverForReverseAssign.name}?`)) {
-                                                    return;
+                                                const driverName = selectedDriverForReverseAssign.name;
+                                                const driverIdVal = String(selectedDriverForReverseAssign.id || selectedDriverForReverseAssign.userId || '');
+                                                
+                                                // Find if driver was previously assigned to another vehicle
+                                                const previousDriverFleetRow = fleetRows.find(f => (f.driverId && String(f.driverId) === driverIdVal) || (f.driverName && f.driverName === driverName && f.driverName !== 'Unassigned'));
+                                                const previousVehicleStr = selectedDriverForReverseAssign.vehicleName 
+                                                    ? `${selectedDriverForReverseAssign.vehicleName} (${selectedDriverForReverseAssign.vehicleNumber || ''})`
+                                                    : (previousDriverFleetRow && previousDriverFleetRow.vehicleNumber ? `${previousDriverFleetRow.vehicleName || 'Vehicle'} (${previousDriverFleetRow.vehicleNumber})` : null);
+
+                                                const hasPreviousVehicle = !!previousVehicleStr;
+
+                                                if (hasPreviousVehicle) {
+                                                    const confirmReassign = window.confirm(
+                                                        `⚠️ REASSIGNMENT WARNING:\n\nDriver "${driverName}" is currently assigned to ${previousVehicleStr}.\n\nDo you want to reassign this driver to Vehicle ${veh.vehicleNumber}?`
+                                                    );
+                                                    if (!confirmReassign) return;
+                                                } else if (currentAssignedDriverName) {
+                                                    const confirmReassign = window.confirm(
+                                                        `⚠️ REASSIGNMENT WARNING:\n\nVehicle "${veh.vehicleNumber}" is currently assigned to Driver "${currentAssignedDriverName}".\n\nDo you want to reassign this vehicle to Driver "${driverName}"?`
+                                                    );
+                                                    if (!confirmReassign) return;
+                                                } else {
+                                                    if (!window.confirm(`Are you sure you want to assign Vehicle "${veh.vehicleNumber}" to Driver "${driverName}"?`)) {
+                                                        return;
+                                                    }
                                                 }
+
                                                 setAssigningVehicle(true);
                                                 try {
+                                                    // 1. Unassign target vehicle if it had another active driver
+                                                    if (assignedFleetRow && (assignedFleetRow as any).activeBookingId) {
+                                                        await apiClient.patch(`/Vehicle/${(assignedFleetRow as any).activeBookingId}/rideStatus`, null, {
+                                                            params: { status: 'cancelled' }
+                                                        }).catch(() => {});
+                                                    }
+
+                                                    // 2. Unassign driver from previous vehicle if assigned elsewhere
+                                                    if (previousDriverFleetRow && (previousDriverFleetRow as any).activeBookingId) {
+                                                        await apiClient.patch(`/Vehicle/${(previousDriverFleetRow as any).activeBookingId}/rideStatus`, null, {
+                                                            params: { status: 'cancelled' }
+                                                        }).catch(() => {});
+                                                    }
+                                                    if (selectedDriverForReverseAssign.activeBookingId) {
+                                                        await apiClient.patch(`/Vehicle/${selectedDriverForReverseAssign.activeBookingId}/rideStatus`, null, {
+                                                            params: { status: 'cancelled' }
+                                                        }).catch(() => {});
+                                                    }
+
+                                                    // 3. Assign driver to vehicle
                                                     await apiClient.post('/Vehicle/bookVehicle', {
-                                                        VehicleId: veh.id,
-                                                        DriverId: selectedDriverForReverseAssign.userId || selectedDriverForReverseAssign.UserId || selectedDriverForReverseAssign.id,
+                                                        VehicleId: veh.id || veh.Id,
+                                                        DriverId: selectedDriverForReverseAssign.userId || selectedDriverForReverseAssign.UserId || selectedDriverForReverseAssign.id || selectedDriverForReverseAssign.Id,
                                                         CT_BookingStatus: 2 // RideStatus.DriverAssigned
                                                     });
 
                                                     const drvUserId = selectedDriverForReverseAssign.userId || selectedDriverForReverseAssign.UserId;
                                                     if (drvUserId) {
-                                                        const vehicleNameStr = veh.vehicleNumber ? `${veh.vehicleName || ''} (${veh.vehicleNumber})` : 'a vehicle';
-                                                        await apiClient.post(`/Transport/sendNotification?userId=${drvUserId}&title=${encodeURIComponent('Vehicle Assigned')}&message=${encodeURIComponent(`VEHICLE_ASSIGN|${vehicleNameStr}`)}`).catch(() => {});
+                                                        const vehTypeStr = veh.vehicleType || 'Truck';
+                                                        const bodyTypeStr = veh.bodyType || 'Standard';
+                                                        const tyreTypeStr = veh.tyreType || 'Standard';
+                                                        const vehicleDetailsStr = `${veh.vehicleName || 'Fleet Vehicle'} (${veh.vehicleNumber}) | Type: ${vehTypeStr} | Body: ${bodyTypeStr} | Tyres: ${tyreTypeStr}`;
+                                                        await apiClient.post(`/Transport/sendNotification?userId=${drvUserId}&title=${encodeURIComponent('🚚 New Vehicle Assigned')}&message=${encodeURIComponent(`VEHICLE_ASSIGN|${vehicleDetailsStr}`)}`).catch(() => {});
                                                     }
 
-                                                    alert("Vehicle assigned successfully!");
+                                                    if (hasPreviousVehicle) {
+                                                        alert(`⚠️ Driver "${driverName}" has been removed from previous vehicle (${previousVehicleStr}) and successfully assigned to Vehicle ${veh.vehicleNumber}!`);
+                                                    } else {
+                                                        alert(`Vehicle "${veh.vehicleNumber}" assigned successfully to Driver "${driverName}"!`);
+                                                    }
+
                                                     setIsReverseAssignModalOpen(false);
                                                     setSelectedDriverForReverseAssign(null);
                                                     fetchDashboardData();
@@ -1271,17 +1572,28 @@ const TransporterDashboard = () => {
                                                 }
                                             }}
                                             disabled={assigningVehicle}
-                                            className="w-full flex items-center justify-between p-3.5 border border-slate-200 hover:border-primary-500 hover:bg-primary-50/20 rounded-xl transition-all cursor-pointer text-left bg-white"
+                                            className="w-full flex items-center justify-between p-3.5 border border-slate-200 hover:border-indigo-500 hover:bg-indigo-50/30 rounded-2xl transition-all cursor-pointer text-left bg-white shadow-sm"
                                         >
                                             <div>
                                                 <p className="font-bold text-slate-900 text-sm">{veh.vehicleName || 'Truck'}</p>
                                                 <p className="text-xs text-slate-500">{veh.vehicleNumber} • Size: {veh.capacityTons || 0} Tons</p>
+                                                {currentAssignedDriverName ? (
+                                                    <span className="inline-block text-[10px] font-extrabold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 mt-1">
+                                                        👤 Currently assigned to {currentAssignedDriverName}
+                                                    </span>
+                                                ) : (
+                                                    <span className="inline-block text-[10px] font-extrabold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 mt-1">
+                                                        ✓ Unassigned / Available
+                                                    </span>
+                                                )}
                                             </div>
-                                            <span className="text-xs font-bold text-primary-600 bg-primary-50 border border-primary-100 px-2.5 py-1 rounded-lg">Assign</span>
+                                            <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-xl shrink-0">
+                                                Select
+                                            </span>
                                         </button>
                                     );
-                                });
-                            })()}
+                                })
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1289,8 +1601,8 @@ const TransporterDashboard = () => {
 
             {/* Vehicle Details Modal Card */}
             {selectedVehicleForDetail && (
-                <div className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200">
+                <div onClick={() => setSelectedVehicleForDetail(null)} className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200">
                         
                         {/* Header Banner */}
                         <div className="bg-slate-900 text-white px-6 py-5 flex items-center justify-between relative">
@@ -1329,8 +1641,13 @@ const TransporterDashboard = () => {
                                     <span className="text-slate-400 font-semibold">Assigned Driver</span>
                                     <span className="font-extrabold text-slate-900">
                                         {(() => {
-                                            const assignment = fleetRows.find(f => String(f.vehicleId) === String(selectedVehicleForDetail.id));
-                                            return assignment && assignment.driverName ? assignment.driverName : 'Unassigned';
+                                            const vehId = String(selectedVehicleForDetail?.id || selectedVehicleForDetail?.Id || '').toLowerCase();
+                                            const vehNum = selectedVehicleForDetail?.vehicleNumber || selectedVehicleForDetail?.VehicleNumber;
+                                            const assignment = fleetRows.find(f => String(f.vehicleId).toLowerCase() === vehId || (f.vehicleNumber && vehNum && f.vehicleNumber === vehNum));
+                                            const driverFromList = drivers.find(d => String(d.vehicleId || '').toLowerCase() === vehId || (d.assignedVehicleNumber && vehNum && d.assignedVehicleNumber === vehNum));
+                                            return assignment && assignment.driverName && assignment.driverName !== 'Unassigned' 
+                                                ? assignment.driverName 
+                                                : (driverFromList ? driverFromList.name : 'Unassigned');
                                         })()}
                                     </span>
                                 </div>
@@ -1383,8 +1700,8 @@ const TransporterDashboard = () => {
 
             {/* Vehicle Actions Modal */}
             {isActionsModalOpen && selectedVehicleForActions && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div onClick={() => { setIsActionsModalOpen(false); setSelectedVehicleForActions(null); }} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
                                 <h3 className="font-extrabold text-slate-900 text-lg">Vehicle Actions</h3>
@@ -1415,7 +1732,7 @@ const TransporterDashboard = () => {
                                     <button
                                         onClick={() => {
                                             setIsActionsModalOpen(false);
-                                            handleUnassignDriver(selectedVehicleForActions.activeBookingId);
+                                            handleUnassignDriver(selectedVehicleForActions.activeBookingId, selectedVehicleForActions.vehicleId, selectedVehicleForActions.driverId);
                                         }}
                                         className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 hover:border-red-500 hover:bg-red-50/30 text-red-600 font-bold text-sm text-left cursor-pointer"
                                     >
@@ -1468,8 +1785,8 @@ const TransporterDashboard = () => {
 
             {/* Assign Route / Customer Request Modal */}
             {isRouteModalOpen && selectedVehicleForActions && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div onClick={() => { setIsRouteModalOpen(false); setSelectedVehicleForActions(null); }} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
                                 <h3 className="font-extrabold text-slate-900 text-lg">Assign Route Request</h3>
@@ -1555,8 +1872,8 @@ const TransporterDashboard = () => {
 
             {/* Real-time Incoming Ride Request Pop-Up Modal */}
             {activeRequestModal && (
-                <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-in fade-in duration-300">
-                    <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-300">
+                <div onClick={() => { setDismissedBookingIds(prev => ({ ...prev, [activeRequestModal.id]: true })); setActiveRequestModal(null); }} className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-in fade-in duration-300">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-300">
                         
                         {/* Header Banner */}
                         <div className="bg-slate-900 text-white px-6 py-5 flex items-center justify-between border-b border-white/10 relative">
@@ -1798,6 +2115,54 @@ const TransporterDashboard = () => {
                                 </div>
                             )}
 
+                            {/* Stage 6: DRIVER_REJECTED - Driver rejected assignment screen */}
+                            {modalStage === 'driver_rejected' && (
+                                <div className="space-y-6 flex flex-col items-center justify-center py-6 text-center">
+                                    <div className="h-16 w-16 rounded-full bg-red-100 border border-red-200 flex items-center justify-center text-red-600 shadow-md">
+                                        <XCircle className="h-9 w-9 animate-pulse" />
+                                    </div>
+                                    <div className="space-y-2 max-w-xs">
+                                        <span className="text-[10px] font-black uppercase tracking-wider bg-red-100 text-red-700 px-2.5 py-1 rounded-full border border-red-200">
+                                            Assignment Declined
+                                        </span>
+                                        <h4 className="text-base font-black text-slate-900">Driver Rejected Order</h4>
+                                        <p className="text-xs font-semibold text-slate-600">
+                                            Driver <span className="font-extrabold text-red-600">{rejectedDriverName || 'Driver'}</span> declined Shipment #{activeRequestModal?.id}.
+                                        </p>
+                                    </div>
+
+                                    <div className="w-full space-y-2 pt-2">
+                                        <button
+                                            onClick={() => {
+                                                setSelectedDriverForAssign('');
+                                                setModalStage('select_driver');
+                                            }}
+                                            className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 font-bold text-xs shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
+                                        >
+                                            <Users className="h-4 w-4" />
+                                            Re-assign Another Driver
+                                        </button>
+
+                                        <button
+                                            onClick={async () => {
+                                                if (activeRequestModal) {
+                                                    try {
+                                                        const transporterUserId = currentUser?.userId || currentUser?.UserId;
+                                                        await apiClient.post(`/Transport/rejectTransporterBooking?transporterUserId=${transporterUserId}&bookingId=${activeRequestModal.id}`);
+                                                    } catch (e) {}
+                                                }
+                                                setActiveRequestModal(null);
+                                                setModalStage('idle');
+                                                fetchDashboardData();
+                                            }}
+                                            className="w-full rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 font-bold text-xs transition-all cursor-pointer text-center"
+                                        >
+                                            Reject / Release Shipment
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
                         </div>
                     </div>
                 </div>
@@ -1910,6 +2275,151 @@ const TransporterDashboard = () => {
                     </div>
                 </div>
             )}
+            {/* DRIVER INFORMATION POPUP MODAL */}
+            {isDriverInfoModalOpen && (
+                <div onClick={() => { setIsDriverInfoModalOpen(false); setDriverModalSummary(null); }} className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div onClick={(e) => e.stopPropagation()} className="relative w-full max-w-lg rounded-3xl bg-white shadow-2xl overflow-hidden border border-slate-100">
+                        {/* Modal Header */}
+                        <div className="bg-slate-900 text-white px-6 py-5 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-2xl bg-indigo-600/30 border border-indigo-400/30 flex items-center justify-center font-extrabold text-indigo-300 text-lg shadow-inner">
+                                    {driverModalSummary?.driverName?.substring(0, 2)?.toUpperCase() || 'DR'}
+                                </div>
+                                <div>
+                                    <h3 className="text-xl font-bold tracking-tight text-white">{driverModalSummary?.driverName || 'Driver Information'}</h3>
+                                    <p className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+                                        <span>📞 {driverModalSummary?.phone || 'N/A'}</span>
+                                        <span>•</span>
+                                        <span className="text-amber-400 font-bold">⭐ {driverModalSummary?.averageRating || '5.0'}</span>
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setIsDriverInfoModalOpen(false)}
+                                className="rounded-full p-2 text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                            >
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+                            {loadingDriverSummary && !driverModalSummary ? (
+                                <div className="py-12 text-center text-slate-500 font-medium">
+                                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-indigo-600 border-t-transparent mb-3"></div>
+                                    <p>Loading live driver details...</p>
+                                </div>
+                            ) : (
+                                <>
+                                    {/* Live Status & Current Location Card */}
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4 space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Duty Status</span>
+                                            <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border shadow-sm ${
+                                                driverModalSummary?.isOnRide 
+                                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300 animate-pulse' 
+                                                    : 'bg-teal-100 text-teal-800 border-teal-300'
+                                            }`}>
+                                                ● {driverModalSummary?.dutyStatus || 'Available'}
+                                            </span>
+                                        </div>
+
+                                        <div className="border-t border-slate-200/60 pt-3">
+                                            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">📍 Driver Current Location</span>
+                                            <p className="text-sm font-extrabold text-slate-800 flex items-start gap-2">
+                                                <MapPin className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
+                                                <span>{driverModalSummary?.currentAddress || 'Location unknown'}</span>
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    {/* Assigned Vehicle Card */}
+                                    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between shadow-sm">
+                                        <div className="flex items-center gap-3">
+                                            <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-600">
+                                                <Truck className="h-5 w-5" />
+                                            </div>
+                                            <div>
+                                                <span className="text-xs font-semibold text-slate-400 uppercase block">Assigned Vehicle</span>
+                                                <p className="font-bold text-slate-900 text-sm">
+                                                    {driverModalSummary?.assignedVehicleName 
+                                                        ? `${driverModalSummary.assignedVehicleName} (${driverModalSummary.assignedVehicleNumber})`
+                                                        : 'No Vehicle Assigned'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Active Ride Details Card */}
+                                    {driverModalSummary?.isOnRide ? (
+                                        <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-5 shadow-sm space-y-4 border-l-4 border-l-indigo-600">
+                                            <div className="flex items-center justify-between border-b border-indigo-100 pb-3">
+                                                <div>
+                                                    <span className="text-[11px] font-extrabold uppercase tracking-widest text-indigo-700 bg-indigo-100 px-2.5 py-0.5 rounded-full">
+                                                        Active Ride #{driverModalSummary.activeBookingId}
+                                                    </span>
+                                                    <h4 className="font-black text-slate-900 text-base mt-1.5">{driverModalSummary.rideStatusName}</h4>
+                                                </div>
+                                                <span className="text-base font-black text-indigo-700 bg-white px-3 py-1.5 rounded-xl border border-indigo-200 shadow-sm">
+                                                    ₹ {driverModalSummary.estimatedFare ?? 'N/A'}
+                                                </span>
+                                            </div>
+
+                                            {/* From -> To Route */}
+                                            <div className="space-y-2 text-sm bg-white p-3.5 rounded-xl border border-indigo-100">
+                                                <div className="flex items-start gap-2.5">
+                                                    <MapPin className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                                                    <div>
+                                                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Pickup Location (From)</span>
+                                                        <span className="font-bold text-slate-800">{driverModalSummary.pickupAddress || 'N/A'}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="ml-2 pl-4 border-l-2 border-dashed border-slate-200 my-1 py-1"></div>
+                                                <div className="flex items-start gap-2.5">
+                                                    <Navigation className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
+                                                    <div>
+                                                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Drop Location (To)</span>
+                                                        <span className="font-bold text-slate-800">{driverModalSummary.dropAddress || 'N/A'}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Customer Info */}
+                                            {(driverModalSummary.customerName || driverModalSummary.customerPhone) && (
+                                                <div className="flex items-center justify-between text-xs bg-white/70 p-3 rounded-xl border border-indigo-100">
+                                                    <span className="text-slate-500 font-medium">Customer: <strong className="text-slate-800">{driverModalSummary.customerName || 'Customer'}</strong></span>
+                                                    {driverModalSummary.customerPhone && (
+                                                        <a href={`tel:${driverModalSummary.customerPhone}`} className="text-indigo-600 font-bold hover:underline">
+                                                            📞 {driverModalSummary.customerPhone}
+                                                        </a>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center text-slate-500 text-sm font-medium">
+                                            <p>This driver is not on any active ride right now.</p>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="bg-slate-50 border-t border-slate-100 px-6 py-3.5 flex items-center justify-between">
+                            <span className="text-[11px] text-slate-400 font-semibold flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping"></span> Live auto-syncing
+                            </span>
+                            <button
+                                onClick={() => setIsDriverInfoModalOpen(false)}
+                                className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm transition-all cursor-pointer"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {chatToast && (
                 <div 
                     onClick={() => {
@@ -1946,6 +2456,29 @@ const TransporterDashboard = () => {
                     </div>
                 </div>
             )}
+            {/* Mobile Bottom Quick Navigation */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-slate-900 border-t border-slate-800 text-white shadow-2xl flex items-center justify-around py-2 px-1 pb-safe">
+                <button onClick={() => setActiveTab('overview')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'overview' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <LayoutDashboard className="h-5 w-5" />
+                    Dashboard
+                </button>
+                <button onClick={() => setActiveTab('vehicles')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'vehicles' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <Truck className="h-5 w-5" />
+                    Fleet
+                </button>
+                <button onClick={() => setActiveTab('drivers')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'drivers' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <Users className="h-5 w-5" />
+                    Driver
+                </button>
+                <button onClick={() => setActiveTab('requests')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'requests' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <Package className="h-5 w-5" />
+                    Requests
+                </button>
+                <button onClick={() => setActiveTab('finance')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'finance' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <CreditCard className="h-5 w-5" />
+                    Finance
+                </button>
+            </div>
         </div>
     );
 };

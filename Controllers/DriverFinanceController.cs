@@ -51,5 +51,12 @@ namespace navgatix.Controllers
         {
             return Ok(await _driverFinanceService.GetAccountStatementAsync(driverUserId));
         }
+
+        [HttpPost("wallet/setPin")]
+        [AllowAnonymous]
+        public async Task<IActionResult> SetTransactionPin([FromBody] SetPinRequestViewModel model)
+        {
+            return Ok(await _driverFinanceService.SetTransactionPinAsync(model.DriverUserId, model.PIN));
+        }
     }
 }

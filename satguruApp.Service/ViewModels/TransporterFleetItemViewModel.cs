@@ -29,8 +29,11 @@ namespace satguruApp.Service.ViewModels
         public string LiveStatus { get; set; }
 
         public decimal? EstimatedFare { get; set; }
+        public decimal? FinalFare { get; set; }
+        public string PickupAddress { get; set; }
         public string DropAddress { get; set; }
         public string GoodsType { get; set; }
         public decimal DailyEarnings { get; set; }
+        public double DriverTodayKm { get; set; }
     }
 }

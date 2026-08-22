@@ -12,6 +12,8 @@ namespace navgatix.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [RequestSizeLimit(long.MaxValue)]
+    [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue, ValueLengthLimit = int.MaxValue)]
     public class VehicleController : ControllerBase
     {
         private readonly IVehicleService _vehicleService;
@@ -68,9 +70,67 @@ namespace navgatix.Controllers
         }
         [HttpPatch("{bookingId}/rideStatus")]
         [AllowAnonymous]
-        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null)
+        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null, [FromQuery] string? cancelledBy = null)
         {
-            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId));
+            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId, cancelledBy));
+        }
+
+        [HttpPost("{bookingId}/processPayment")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ProcessPayment(long bookingId, [FromQuery] string paymentMethod = "UPI", [FromQuery] string paymentType = "Advance", [FromQuery] string? transactionId = null)
+        {
+            var booking = await _db.Bookings.FirstOrDefaultAsync(b => b.Id == bookingId && b.IsDeleted != true);
+            if (booking == null)
+            {
+                return NotFound("Booking not found.");
+            }
+
+            var statusStr = paymentType == "Advance" ? "Paid (Advance)" : "Paid";
+            var txnId = string.IsNullOrWhiteSpace(transactionId) ? $"NAV-UPI-{Guid.NewGuid().ToString().Substring(0, 8).ToUpper()}" : transactionId;
+            var amount = booking.EstimatedFare ?? booking.FinalFare ?? 0;
+
+            if (!string.IsNullOrEmpty(booking.CustomerId))
+            {
+                _db.Notifications.Add(new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = booking.CustomerId,
+                    Title = "Payment Successful",
+                    Message = $"PAYMENT_SUCCESS|{bookingId}|Payment of ₹{amount} received via {paymentMethod}!",
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+
+            if (booking.DriverId.HasValue)
+            {
+                var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == booking.DriverId.Value);
+                if (driver != null && !string.IsNullOrEmpty(driver.UserId))
+                {
+                    _db.Notifications.Add(new Notification
+                    {
+                        Id = Guid.NewGuid(),
+                        UserId = driver.UserId,
+                        Title = "Payment Received",
+                        Message = $"PAYMENT_RECEIVED|{bookingId}|{paymentMethod}|{paymentType}|₹{amount}",
+                        IsRead = false,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+            }
+
+            await _db.SaveChangesAsync();
+
+            return Ok(new
+            {
+                isSuccess = true,
+                message = "Payment processed successfully.",
+                bookingId = booking.Id,
+                paymentStatus = statusStr,
+                paymentMethod = paymentMethod,
+                transactionId = txnId,
+                amount = amount
+            });
         }
         [HttpPatch("{bookingId}/rideRequest/reject")]
         [AllowAnonymous]
@@ -199,6 +259,13 @@ namespace navgatix.Controllers
 
             var avg = ratings.Average(r => r.Score ?? 0);
             return Ok(new { averageRating = Math.Round(avg, 1), totalRatings = ratings.Count });
+        }
+
+        [HttpGet("driverSummaryCard/{driverUserId}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetDriverSummaryCard(string driverUserId)
+        {
+            return Ok(await _vehicleService.GetDriverSummaryCardAsync(driverUserId));
         }
     }
 }

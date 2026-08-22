@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, useRef } from 'react';
-import { DollarSign, Truck, Clock, Wallet, Send, MapPin, Route, History, MessageCircle, LayoutDashboard, LogOut, Settings, Menu, ChevronDown, CreditCard, Bell, Key, User, Star, Phone, AlertTriangle, X } from 'lucide-react';
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import { DollarSign, Truck, Clock, Wallet, Send, MapPin, Route, History, MessageCircle, LayoutDashboard, LogOut, Settings, Menu, ChevronDown, CreditCard, Bell, Key, User, Star, Phone, AlertTriangle, X, Home, Package, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import apiClient from '../../api/apiClient';
 import ChatPanel from '../../components/ChatPanel';
@@ -9,6 +9,8 @@ import { useAuth } from '../../hooks/useAuth';
 import DriverWallet from '../../components/DriverWallet';
 import NotificationSettings from '../../components/NotificationSettings';
 import SecuritySettings from '../../components/SecuritySettings';
+import TrackingMap from '../../components/TrackingMap';
+import { VerificationPendingGuard } from '../../components/VerificationPendingGuard';
 
 type RideStatus = 'request_for_ride' | 'driver_assigned' | 'driver_arriving' | 'ride_started' | 'ride_completed' | 'cancelled';
 
@@ -29,13 +31,18 @@ type RideItem = {
     dropLat?: number;
     dropLng?: number;
     isPaid?: boolean;
+    isTransporterAssigned?: boolean;
+    transporterName?: string;
+    vehicleTypeName?: string;
+    bodyTypeName?: string;
+    tyreTypeName?: string;
 };
 
 const ACTIVE_STATUSES: RideStatus[] = ['driver_assigned', 'driver_arriving', 'ride_started'];
 
 const DriverDashboard = () => {
     const navigate = useNavigate();
-    const [activeTab, setActiveTab] = useState<'overview' | 'wallet' | 'settings'>('overview');
+    const [activeTab, setActiveTab] = useState<'overview' | 'wallet' | 'shipments' | 'settings'>('overview');
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [settingsExpanded, setSettingsExpanded] = useState(false);
     const [user, setUser] = useState<any>(null);
@@ -45,12 +52,15 @@ const DriverDashboard = () => {
     const [rides, setRides] = useState<RideItem[]>([]);
     const [loadingRides, setLoadingRides] = useState(false);
     const [disputeDrafts, setDisputeDrafts] = useState<Record<number, string>>({});
-    const [withdrawAmount, setWithdrawAmount] = useState('');
     const [isTracking, setIsTracking] = useState(false);
     const [currentPosition, setCurrentPosition] = useState<{ lat: number; lng: number } | null>(null);
     const [chatBookingId, setChatBookingId] = useState<number | null>(null);
     const [directChatRoomName, setDirectChatRoomName] = useState<string | null>(null);
     const lastSeenNotifIdsRef = useRef<Set<string>>(new Set());
+    const handledCancellationNotifIdsRef = useRef<Set<string>>(new Set());
+    const [driverSummaryCard, setDriverSummaryCard] = useState<any>(null);
+    const [driverMetrics, setDriverMetrics] = useState<{ distanceKm: number; etaMins: number; phase: 'pickup' | 'delivery' } | null>(null);
+    const [showPaymentCollectionModal, setShowPaymentCollectionModal] = useState<any>(null);
     const [chatToast, setChatToast] = useState<{
         id: string;
         bookingId?: number;
@@ -59,6 +69,7 @@ const DriverDashboard = () => {
         messageText: string;
     } | null>(null);
     const [activeVehicleId, setActiveVehicleId] = useState<string | null>(null);
+    const [assignedVehicleInfo, setAssignedVehicleInfo] = useState<any>(null);
     const [activeTransporter, setActiveTransporter] = useState<any>({ isIndependent: true });
     const [relationshipRequests, setRelationshipRequests] = useState<any[]>([]);
     const [outboundJoinRequests, setOutboundJoinRequests] = useState<any[]>([]);
@@ -70,7 +81,7 @@ const DriverDashboard = () => {
     const [acceptState, setAcceptState] = useState<'idle' | 'loading_route' | 'ready'>('idle');
     const [isSosOpen, setIsSosOpen] = useState(false);
     const [activeRequestPopup, setActiveRequestPopup] = useState<RideItem | null>(null);
-    const [dismissedRequestIds, setDismissedRequestIds] = useState<Record<number, boolean>>({});
+    const [dismissedRequestIds, setDismissedRequestIds] = useState<Record<string | number, boolean>>({});
 
 
     const driverUserId = user?.userId || user?.UserId || user?.id || '';
@@ -145,6 +156,8 @@ const DriverDashboard = () => {
                             pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
                             dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
                             dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
+                            isTransporterAssigned: !!(item.isTransporterAssigned ?? item.IsTransporterAssigned),
+                            transporterName: item.transporterName ?? item.TransporterName,
                         }))
                 );
 
@@ -162,6 +175,10 @@ const DriverDashboard = () => {
                         finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
                         rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
                         createdAt: item.createdAt ?? item.CreatedAt,
+                        pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
+                        pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
+                        dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
+                        dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
                         scheduledTime: item.scheduledTime ?? item.ScheduledTime,
                         isPaid: !!(item.isPaid ?? item.IsPaid),
                     }));
@@ -188,9 +205,23 @@ const DriverDashboard = () => {
             try {
                 const res = await apiClient.get(`/Transport/getDriverActiveVehicle?userId=${driverUserId}`);
                 setActiveVehicleId(res.data?.vehicleId || res.data?.VehicleId || null);
+
+                const assignedRes = await apiClient.get(`/Transport/getDriverAssignedVehicle/${driverUserId}`);
+                if (assignedRes.data?.isAssigned && assignedRes.data?.vehicle) {
+                    setAssignedVehicleInfo(assignedRes.data.vehicle);
+                } else {
+                    setAssignedVehicleInfo(null);
+                }
             } catch (err) {
                 console.error("Failed to load active vehicle ID:", err);
             }
+        };
+
+        const loadDriverSummaryCard = async () => {
+            try {
+                const res = await apiClient.get(`/Vehicle/driverSummaryCard/${driverUserId}`);
+                setDriverSummaryCard(res.data);
+            } catch (err) {}
         };
 
         loadWallet();
@@ -198,6 +229,20 @@ const DriverDashboard = () => {
         loadRelationshipDetails();
         loadRating();
         loadActiveVehicleId();
+        loadDriverSummaryCard();
+    }, [driverUserId]);
+
+    const fetchDashboardData = useCallback(async () => {
+        if (!driverUserId) return;
+        try {
+            const [wRes, sRes] = await Promise.all([
+                apiClient.get(`/DriverFinance/wallet/${driverUserId}`).catch(() => null),
+                apiClient.get(`/Vehicle/driverSummaryCard/${driverUserId}`).catch(() => null)
+            ]);
+            if (wRes?.data) setWallet(wRes.data);
+            if (sRes?.data) setDriverSummaryCard(sRes.data);
+            refreshRides();
+        } catch (e) {}
     }, [driverUserId]);
 
     // Poll ride requests and relationship notifications
@@ -210,6 +255,13 @@ const DriverDashboard = () => {
             try {
                 const res = await apiClient.get(`/Transport/getDriverActiveVehicle?userId=${driverUserId}`);
                 setActiveVehicleId(res.data?.vehicleId || res.data?.VehicleId || null);
+
+                const assignedRes = await apiClient.get(`/Transport/getDriverAssignedVehicle/${driverUserId}`);
+                if (assignedRes.data?.isAssigned && assignedRes.data?.vehicle) {
+                    setAssignedVehicleInfo(assignedRes.data.vehicle);
+                } else {
+                    setAssignedVehicleInfo(null);
+                }
             } catch (err) {
                 console.error("Failed to poll active vehicle ID:", err);
             }
@@ -220,7 +272,10 @@ const DriverDashboard = () => {
     // Track incoming requests to trigger pop-up modals
     useEffect(() => {
         if (rideRequests.length > 0) {
-            const activeReq = rideRequests.find(r => !dismissedRequestIds[r.id]);
+            const activeReq = rideRequests.find(r => {
+                const dismissKey = r.isTransporterAssigned ? `transporter_${r.id}` : `${r.id}`;
+                return !dismissedRequestIds[dismissKey];
+            });
             if (activeReq) {
                 setActiveRequestPopup(activeReq);
             } else {
@@ -331,6 +386,9 @@ const DriverDashboard = () => {
                     pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
                     dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
                     dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
+                    vehicleTypeName: item.vehicleTypeName ?? item.VehicleTypeName,
+                    bodyTypeName: item.bodyTypeName ?? item.BodyTypeName,
+                    tyreTypeName: item.tyreTypeName ?? item.TyreTypeName,
                 }))
         );
 
@@ -348,6 +406,10 @@ const DriverDashboard = () => {
                 finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
                 rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
                 createdAt: item.createdAt ?? item.CreatedAt,
+                pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
+                pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
+                dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
+                dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
                 scheduledTime: item.scheduledTime ?? item.ScheduledTime,
                 isPaid: !!(item.isPaid ?? item.IsPaid),
             }));
@@ -397,6 +459,38 @@ const DriverDashboard = () => {
                                 messageText
                             });
                         }
+                    }
+
+                    if (n.message && n.message.startsWith('ASSIGN_SHIPMENT|')) {
+                        try {
+                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                            audio.volume = 0.8;
+                            audio.play().catch(() => {});
+                        } catch (e) {}
+                    }
+
+                }
+
+                if (n.message && (n.message.startsWith('RIDE_CANCELLED_BY_CUSTOMER|') || n.message.startsWith('RIDE_CANCELLED_BY_TRANSPORTER|'))) {
+                    if (!handledCancellationNotifIdsRef.current.has(n.id)) {
+                        handledCancellationNotifIdsRef.current.add(n.id);
+                        apiClient.post(`/Transport/markNotificationRead?notificationId=${n.id}`).catch(() => {});
+
+                        const parts = n.message.split('|');
+                        const bId = Number(parts[1]);
+                        const cancellerName = parts[2] || 'User';
+                        const role = n.message.startsWith('RIDE_CANCELLED_BY_CUSTOMER|') ? 'Customer' : 'Transporter';
+
+                        try {
+                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                            audio.volume = 0.8;
+                            audio.play().catch(() => {});
+                        } catch (e) {}
+
+                        alert(`Shipment #${bId} was cancelled by ${role} (${cancellerName}).`);
+                        
+                        setActiveRequestPopup((prev: any) => (prev && Number(prev.id) === bId ? null : prev));
+                        refreshRides();
                     }
                 }
             });
@@ -457,10 +551,20 @@ const DriverDashboard = () => {
             loadRelationshipDetails();
         } catch (err: any) {
             console.error("Failed to send leave request:", err);
-            alert(err?.response?.data || err?.response?.data?.message || "Failed to request leave.");
         }
     };
+
+    const hasActiveDelivery = useMemo(() => {
+        return rides.some(r => r.rideStatus && ['driver_assigned', 'driver_arriving', 'ride_started'].includes(r.rideStatus));
+    }, [rides]);
+
     const handleToggleOnline = async () => {
+        if (hasActiveDelivery && isTracking) {
+            const activeRide = rides.find(r => r.rideStatus && ['driver_assigned', 'driver_arriving', 'ride_started'].includes(r.rideStatus));
+            alert(`⚠️ Location tracking cannot be turned off while delivering an active shipment (Ride #${activeRide?.id || ''}). Please complete or cancel your active delivery first.`);
+            return;
+        }
+
         const nextState = !isTracking;
         if (!nextState) {
             const confirmed = window.confirm("Are you sure you want to turn off your online status?");
@@ -471,8 +575,12 @@ const DriverDashboard = () => {
         try {
             const driverUserId = user?.userId || user?.id || user?.UserId || '';
             await apiClient.post(`/Transport/toggleDriverOnlineStatus?vehicleId=${vehicleId || ''}&isOnline=${nextState}&driverUserId=${driverUserId}`);
-        } catch (err) {
+        } catch (err: any) {
             console.error("Failed to toggle online status on backend:", err);
+            if (err?.response?.data?.message) {
+                alert(err.response.data.message);
+                setIsTracking(true);
+            }
         }
     };
 
@@ -525,32 +633,15 @@ const DriverDashboard = () => {
             if (nextStatus === 'driver_assigned' && driverId) {
                 params.driverId = driverId;
             }
+            if (nextStatus === 'cancelled') {
+                params.cancelledBy = 'Driver';
+            }
 
             const res = await apiClient.patch(`/Vehicle/${ride.id}/rideStatus`, null, { params });
             alert(res.data?.message || res.data?.Message || 'Ride status updated.');
             await refreshRides();
         } catch (err: any) {
             alert(err?.response?.data?.message || err?.response?.data?.Message || 'Ride status update failed.');
-        }
-    };
-
-
-
-    const requestWithdrawal = async () => {
-        const amount = Number(withdrawAmount);
-        if (!driverUserId || !amount || amount <= 0) {
-            alert('Enter valid withdrawal amount.');
-            return;
-        }
-        try {
-            const payload = { driverUserId, amount, note: 'Driver dashboard withdrawal request' };
-            const res = await apiClient.post('/DriverFinance/withdrawal/request', payload);
-            alert(res.data?.message || res.data?.Message || 'Withdrawal requested.');
-            setWithdrawAmount('');
-            const refreshed = await apiClient.get(`/DriverFinance/wallet/${driverUserId}`);
-            setWallet(refreshed.data || {});
-        } catch (err: any) {
-            alert(err?.response?.data?.message || err?.response?.data?.Message || 'Withdrawal request failed.');
         }
     };
 
@@ -590,6 +681,20 @@ const DriverDashboard = () => {
     };
 
     if (!user) return null;
+
+    const isVerificationPending = user?.profileStatus === 'PENDING' || user?.profileStatus === 'SUBMITTED' || user?.ProfileStatus === 'PENDING' || user?.ProfileStatus === 'SUBMITTED';
+
+    if (isVerificationPending) {
+        return (
+            <VerificationPendingGuard
+                roleName="Driver"
+                userName={user?.firstName || user?.name}
+                onRefreshStatus={() => {
+                    window.location.reload();
+                }}
+            />
+        );
+    }
 
     return (
         <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
@@ -683,15 +788,15 @@ const DriverDashboard = () => {
                         )}
                     </nav>
 
-                    <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
+                    <div onClick={() => navigate('/profile')} className="bg-slate-50 hover:bg-indigo-50/50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3 cursor-pointer transition-all">
                         <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
-                            {user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}
+                            {(user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D').toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold text-slate-900 truncate">{user?.firstName || user?.name || 'Driver'}</p>
-                            <p className="text-xs text-slate-500 truncate text-uppercase">DRIVER</p>
+                            <p className="text-xs text-slate-500 truncate">DRIVER</p>
                         </div>
-                        <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
+                        <button onClick={(e) => { e.stopPropagation(); handleLogout(); }} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
                             <LogOut className="h-4 w-4" />
                         </button>
                     </div>
@@ -700,15 +805,22 @@ const DriverDashboard = () => {
 
             {/* Main Content */}
             <main className="flex-1 overflow-y-auto relative z-10 flex flex-col">
+                {(user?.profileStatus === 'PENDING' || user?.profileStatus === 'SUBMITTED' || user?.profileVerified === false) && (
+                    <VerificationPendingGuard 
+                        roleName="Driver" 
+                        userName={user?.firstName || user?.name || 'Driver'} 
+                        onRefreshStatus={() => window.location.reload()} 
+                    />
+                )}
                 {/* Mobile Header Bar */}
                 <header className="md:hidden h-16 bg-slate-900 text-white flex items-center justify-between px-4 sticky top-0 z-20 shadow-md">
                     <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-white/10 rounded-lg">
                         <Menu className="h-6 w-6 text-white" />
                     </button>
                     <span className="font-extrabold tracking-tight">Navgatix</span>
-                    <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm">
-                        {user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}
-                    </div>
+                    <button onClick={() => navigate('/profile')} className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all">
+                        {(user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D').toUpperCase()}
+                    </button>
                 </header>
 
                 <div className="flex-1 overflow-y-auto relative p-6 md:p-8 max-w-7xl w-full mx-auto">
@@ -718,8 +830,8 @@ const DriverDashboard = () => {
                     </div>
 
                     <div className="relative z-10">
-                    {activeTab === 'overview' && (
-                        <>
+                    {(activeTab === 'overview' || activeTab === 'shipments') && (
+                        <div className="space-y-8">
                             <header className="flex justify-between items-end mb-10 h-24">
                                 <div className="text-white space-y-1">
                                     <p className="text-indigo-200 font-bold tracking-wide text-sm uppercase">Hii, {user?.firstName || user?.name || 'Driver'}</p>
@@ -759,40 +871,55 @@ const DriverDashboard = () => {
                                     <p className="text-indigo-200">Current ride controls, ride history, wallet summary, withdrawals, and issue reporting.</p>
                                     <div className="flex items-center gap-3 bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl px-4 py-2 shadow-lg">
                                         <div className="flex flex-col items-end">
-                                            <p className="text-xs font-bold text-indigo-200 uppercase tracking-wider">Tracking Status</p>
+                                            <p className="text-xs font-bold text-indigo-200 uppercase tracking-wider flex items-center gap-1">
+                                                {hasActiveDelivery && <Lock className="w-3 h-3 text-amber-300 fill-amber-300/30" />}
+                                                <span>Driver Online Status</span>
+                                            </p>
                                             <p className={`text-sm font-bold ${isTracking ? 'text-emerald-400' : 'text-slate-300'}`}>
                                                 {isTracking ? 'LIVE & ONLINE' : 'OFFLINE'}
+                                                {hasActiveDelivery && <span className="text-[10px] text-amber-300 font-extrabold ml-1 uppercase">(LOCKED ACTIVE)</span>}
                                             </p>
                                         </div>
                                         <button 
                                             onClick={handleToggleOnline}
-                                            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${isTracking ? 'bg-emerald-500' : 'bg-white/20'}`}
+                                            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${isTracking ? 'bg-emerald-500' : 'bg-white/20'} ${hasActiveDelivery ? 'ring-2 ring-amber-400/50' : ''}`}
+                                            title={hasActiveDelivery ? 'Location tracking is locked ON during active shipment delivery' : 'Toggle Online/Offline status'}
                                         >
                                             <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${isTracking ? 'translate-x-5' : 'translate-x-0'}`} />
                                         </button>
                                     </div>
                                 </div>
-                            </div>
+                             </div>
 
-                            {/* Notification & System Control */}
-                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8 relative z-10">
-                                <div className="mb-4">
-                                    <h3 className="text-lg font-bold text-slate-900">Notification & System Control</h3>
-                                    <p className="text-slate-500 text-xs mt-0.5">Tune your push alerts, auto-matching parameters, and dynamic hardware triggers.</p>
-                                </div>
-                                <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between gap-4">
-                                    <div className="space-y-0.5">
-                                        <p className="font-bold text-slate-800 text-sm">Driver Online Status</p>
-                                        <p className="text-xs text-slate-500">Toggle whether you are available to receive load assignments.</p>
-                                    </div>
-                                    <button 
-                                        onClick={handleToggleOnline}
-                                        className={`w-14 h-8 flex items-center rounded-full p-1 transition-all duration-300 cursor-pointer ${isTracking ? 'bg-emerald-500 justify-end' : 'bg-slate-300 justify-start'}`}
-                                    >
-                                        <div className="w-6 h-6 rounded-full bg-white shadow-md"></div>
-                                    </button>
-                                </div>
-                            </div>
+                             {/* Wallet Summary Stats Grid */}
+                             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 md:gap-4 mb-8 relative z-10">
+                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Current Balance</p>
+                                     <h3 className="text-xl font-black text-slate-900">{toCurrency(wallet?.currentBalance)}</h3>
+                                     <Wallet className="h-5 w-5 text-emerald-600 mt-2" />
+                                 </div>
+                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Today's Earnings</p>
+                                     <h3 className="text-xl font-black text-slate-900">{toCurrency(wallet?.totalEarnings)}</h3>
+                                     <DollarSign className="h-5 w-5 text-blue-600 mt-2" />
+                                 </div>
+                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm border-t-4 border-t-purple-600">
+                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Today's KM Driven</p>
+                                     <h3 className="text-xl font-black text-purple-700">{(driverSummaryCard?.todaysTotalKm || 0).toFixed(1)} km</h3>
+                                     <Route className="h-5 w-5 text-purple-600 mt-2" />
+                                 </div>
+                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Ride Payments</p>
+                                     <h3 className="text-xl font-black text-slate-900">{toCurrency(wallet?.totalRidePayments)}</h3>
+                                     <Truck className="h-5 w-5 text-indigo-600 mt-2" />
+                                 </div>
+                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Pending Payouts</p>
+                                     <h3 className="text-xl font-black text-slate-900">{wallet?.pendingWithdrawalCount || 0}</h3>
+                                     <p className="text-[10px] text-slate-500 mt-0.5">{toCurrency(wallet?.pendingWithdrawalAmount)}</p>
+                                     <Clock className="h-5 w-5 text-amber-600 mt-1" />
+                                 </div>
+                             </div>
 
                             {/* Transporter Relationship Control Panel */}
                             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8 relative z-10 space-y-4">
@@ -895,11 +1022,11 @@ const DriverDashboard = () => {
                                 </div>
 
                                 {/* Inbound Invitations from Transporters */}
-                                {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|')).length > 0 && (
+                                {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|') && !req.message.startsWith('ASSIGN_SHIPMENT|')).length > 0 && (
                                     <div className="border-t border-slate-100 pt-4 space-y-3">
                                         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Inbound Invitations</p>
                                         <div className="space-y-2">
-                                            {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|')).map(req => {
+                                            {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|') && !req.message.startsWith('ASSIGN_SHIPMENT|')).map(req => {
                                                 const parts = req.message.split('|');
                                                 const companyName = parts[3] || 'Transporter';
                                                 const email = parts[2] || '';
@@ -932,34 +1059,42 @@ const DriverDashboard = () => {
                                 )}
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                                    <p className="text-sm font-bold text-slate-500 mb-1">Current Balance</p>
-                                    <h3 className="text-2xl font-black text-slate-900">{toCurrency(wallet?.currentBalance)}</h3>
-                                    <Wallet className="h-5 w-5 text-emerald-600 mt-3" />
-                                </div>
-                                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                                    <p className="text-sm font-bold text-slate-500 mb-1">Today's Earnings</p>
-                                    <h3 className="text-2xl font-black text-slate-900">{toCurrency(wallet?.totalEarnings)}</h3>
-                                    <DollarSign className="h-5 w-5 text-blue-600 mt-3" />
-                                </div>
-                                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                                    <p className="text-sm font-bold text-slate-500 mb-1">Ride Payments</p>
-                                    <h3 className="text-2xl font-black text-slate-900">{toCurrency(wallet?.totalRidePayments)}</h3>
-                                    <Truck className="h-5 w-5 text-indigo-600 mt-3" />
-                                </div>
-                                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                                    <p className="text-sm font-bold text-slate-500 mb-1">Pending Withdrawals</p>
-                                    <h3 className="text-2xl font-black text-slate-900">{wallet?.pendingWithdrawalCount || 0}</h3>
-                                    <p className="text-xs text-slate-500 mt-1">{toCurrency(wallet?.pendingWithdrawalAmount)}</p>
-                                    <Clock className="h-5 w-5 text-amber-600 mt-2" />
-                                </div>
-                            </div>
-
                             {(loadingWallet || loadingRides) && <p className="text-sm text-slate-500 mb-6">Loading driver data...</p>}
 
-                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8">
-                                <h3 className="text-lg font-bold text-slate-900 mb-4">Pending Ride Requests</h3>
+                             {assignedVehicleInfo && (
+                                 <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl border border-slate-800 mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in duration-300">
+                                     <div className="flex items-center gap-4">
+                                         <div className="w-14 h-14 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-3xl shrink-0 shadow-inner">
+                                             🚚
+                                         </div>
+                                         <div className="space-y-1">
+                                             <div className="flex items-center gap-2">
+                                                 <span className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/20 text-indigo-300 px-3 py-0.5 rounded-full border border-indigo-500/40">
+                                                     Assigned Fleet Vehicle
+                                                 </span>
+                                             </div>
+                                             <h3 className="text-xl font-black text-white">
+                                                 {assignedVehicleInfo.vehicleName} <span className="text-indigo-400 font-mono">({assignedVehicleInfo.registrationNumber})</span>
+                                             </h3>
+                                             <p className="text-xs text-slate-300 font-medium">
+                                                 Type: <span className="font-bold text-white">{assignedVehicleInfo.vehicleType || 'Truck'}</span>
+                                                 {assignedVehicleInfo.bodyType ? ` • Body: ${assignedVehicleInfo.bodyType}` : ''}
+                                                 {assignedVehicleInfo.tyreType ? ` • Tyres: ${assignedVehicleInfo.tyreType}` : ''}
+                                                 {assignedVehicleInfo.capacity ? ` • Capacity: ${assignedVehicleInfo.capacity} Tons` : ''}
+                                             </p>
+                                         </div>
+                                     </div>
+                                     <div className="flex items-center gap-2 shrink-0">
+                                         <span className="px-3.5 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-xl text-xs font-extrabold flex items-center gap-1.5">
+                                             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                                             Active Vehicle Ready
+                                         </span>
+                                     </div>
+                                 </div>
+                             )}
+
+                                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8">
+                                 <h3 className="text-lg font-bold text-slate-900 mb-4">Pending Ride Requests</h3>
                                 {rideRequests.length === 0 ? (
                                     <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
                                         No pending ride requests for you right now.
@@ -968,6 +1103,25 @@ const DriverDashboard = () => {
                                     <div className="space-y-4">
                                         {rideRequests.map((ride) => (
                                             <div key={ride.id} className="rounded-2xl border border-slate-200 p-5">
+                                                 {/* Transporter Assignment vs Direct Customer Request Badge */}
+                                                 {ride.isTransporterAssigned ? (
+                                                     <div className="w-full bg-purple-50 border border-purple-200/80 rounded-xl p-3 flex items-center justify-between text-xs text-purple-950 font-bold mb-3 shadow-sm">
+                                                         <div className="flex items-center gap-2">
+                                                             <span className="bg-purple-600 text-white px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider shadow-sm">
+                                                                 🏢 Assigned by Transporter
+                                                             </span>
+                                                             <span>Request by Customer ({ride.customerName || 'Customer'}) and assigned by your Transporter {ride.transporterName ? `(${ride.transporterName})` : ''}</span>
+                                                         </div>
+                                                     </div>
+                                                 ) : (
+                                                     <div className="w-full bg-sky-50 border border-sky-200/80 rounded-xl p-2.5 flex items-center gap-2 text-xs text-sky-950 font-semibold mb-3">
+                                                         <span className="bg-sky-600 text-white px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider shadow-sm">
+                                                             👤 Direct Customer Request
+                                                         </span>
+                                                         <span>Requested directly by Customer: {ride.customerName || 'Customer'}</span>
+                                                     </div>
+                                                 )}
+
                                                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                                                     <div className="space-y-2">
                                                         <div className="flex items-center gap-3 flex-wrap">
@@ -996,6 +1150,14 @@ const DriverDashboard = () => {
                                                                 <p><span className="font-semibold text-slate-800">Weight:</span> {ride.goodsWeight} kg</p>
                                                             ) : null}
                                                             <p><span className="font-semibold text-slate-800">Estimated Fare:</span> {toCurrency(ride.estimatedFare)}</p>
+                                                            {(ride.vehicleTypeName || ride.bodyTypeName || ride.tyreTypeName) && (
+                                                                <div className="mt-2.5 p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-1">
+                                                                    <p className="font-extrabold text-slate-700 uppercase tracking-wider text-[10px]">📋 Customer Vehicle Requirements:</p>
+                                                                    {ride.vehicleTypeName && <p><span className="font-medium text-slate-600">Vehicle Type:</span> <span className="font-bold text-slate-900">{ride.vehicleTypeName}</span></p>}
+                                                                    {ride.bodyTypeName && <p><span className="font-medium text-slate-600">Body Type:</span> <span className="font-bold text-slate-900">{ride.bodyTypeName}</span></p>}
+                                                                    {ride.tyreTypeName && <p><span className="font-medium text-slate-600">Tyre Type:</span> <span className="font-bold text-slate-900">{ride.tyreTypeName}</span></p>}
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     </div>
                                                     <div className="flex flex-col gap-3 sm:flex-row">
@@ -1026,7 +1188,7 @@ const DriverDashboard = () => {
                                 )}
                             </div>
 
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                            <div className="mb-8">
                                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
                                     <h3 className="text-lg font-bold text-slate-900 mb-4">Current Ride Status</h3>
                                     {currentRide ? (
@@ -1055,10 +1217,48 @@ const DriverDashboard = () => {
                                                         <span>{currentRide.pickupAddress || 'Pickup location not available'}</span>
                                                     </div>
                                                     <div className="flex items-start gap-2">
-                                                        <Route className="h-4 w-4 text-rose-600 mt-0.5" />
-                                                        <span>{currentRide.dropAddress || 'Drop location not available'}</span>
-                                                    </div>
-                                                </div>
+                                                         <Route className="h-4 w-4 text-rose-600 mt-0.5" />
+                                                         <span>{currentRide.dropAddress || 'Drop location not available'}</span>
+                                                     </div>
+                                                 </div>
+
+                                             {/* Live Driver Navigation Map Card */}
+                                             <div className="rounded-2xl overflow-hidden border border-slate-200 shadow-sm mt-4">
+                                                 <div className="bg-slate-900 text-white p-3 flex items-center justify-between">
+                                                     <div className="flex items-center gap-2">
+                                                         <span className="text-lg">{currentRide.rideStatus === 'ride_started' ? '🚩' : '📍'}</span>
+                                                         <div>
+                                                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                                                 {currentRide.rideStatus === 'ride_started' ? 'Navigation to Drop Destination' : 'Navigation to Customer Pickup'}
+                                                             </p>
+                                                             {driverMetrics && (
+                                                                 <p className="text-xs font-extrabold text-emerald-400">
+                                                                     {driverMetrics.distanceKm} km • ~{driverMetrics.etaMins} mins
+                                                                 </p>
+                                                             )}
+                                                         </div>
+                                                     </div>
+                                                     <button 
+                                                         onClick={() => {
+                                                             const targetLat = currentRide.rideStatus === 'ride_started' ? (currentRide.dropLat || 19.076) : (currentRide.pickupLat || 28.6139);
+                                                             const targetLng = currentRide.rideStatus === 'ride_started' ? (currentRide.dropLng || 72.8777) : (currentRide.pickupLng || 77.209);
+                                                             window.open(`https://www.google.com/maps/dir/?api=1&destination=${targetLat},${targetLng}`, '_blank');
+                                                         }}
+                                                         className="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 text-xs font-bold transition-all shadow cursor-pointer flex items-center gap-1"
+                                                     >
+                                                         🗺️ Google Maps
+                                                     </button>
+                                                 </div>
+                                                 <TrackingMap 
+                                                     bookingId={currentRide.id}
+                                                     pickupLat={currentRide.pickupLat || 28.6139}
+                                                     pickupLng={currentRide.pickupLng || 77.2090}
+                                                     dropLat={currentRide.dropLat || 19.0760}
+                                                     dropLng={currentRide.dropLng || 72.8777}
+                                                     rideStatus={currentRide.rideStatus}
+                                                     onMetricsUpdate={(m: any) => setDriverMetrics(m)}
+                                                 />
+                                             </div>
                                             </div>
 
                                             {/* Navigation Quick Actions */}
@@ -1105,35 +1305,49 @@ const DriverDashboard = () => {
                                                     <span className="text-slate-300">➔</span>
                                                     <span className={`px-2 py-0.5 rounded-full ${currentRide.rideStatus === 'ride_completed' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500'}`}>Delivered</span>
                                                 </div>
+
+                                                {/* Action Control Button */}
+                                                {currentRide.rideStatus === 'driver_assigned' && (
+                                                    <button
+                                                        onClick={() => advanceRideStatus(currentRide, 'driver_arriving')}
+                                                        className="w-full rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer mb-2"
+                                                    >
+                                                        📦 Goods Loaded successfully
+                                                    </button>
+                                                )}
+
+                                                {currentRide.rideStatus === 'driver_arriving' && (
+                                                    <button
+                                                        onClick={() => advanceRideStatus(currentRide, 'ride_started')}
+                                                        className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer mb-2"
+                                                    >
+                                                        🚚 Start Journey
+                                                    </button>
+                                                )}
+
+                                                {/* Driver Payment Collection Button (Advance & Post-Ride) */}
+                                                {currentRide.rideStatus !== 'ride_completed' && (
+                                                    <button
+                                                        onClick={() => setShowPaymentCollectionModal(currentRide)}
+                                                        className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3.5 text-sm tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer mb-2 flex items-center justify-center gap-2"
+                                                    >
+                                                        💰 Collect Payment (Cash / UPI QR)
+                                                    </button>
+                                                )}
+
+                                                {(currentRide.rideStatus === 'driver_assigned' || currentRide.rideStatus === 'driver_arriving') && (
+                                                    <button
+                                                        onClick={async () => {
+                                                            if (window.confirm("Are you sure you want to cancel this ride?")) {
+                                                                await advanceRideStatus(currentRide, 'cancelled');
+                                                            }
+                                                        }}
+                                                        className="w-full mt-2 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 font-extrabold py-3 text-sm tracking-wide transition-all cursor-pointer text-center flex items-center justify-center gap-1.5"
+                                                    >
+                                                        🚫 Cancel Ride
+                                                    </button>
+                                                )}
                                             </div>
-
-                                            {/* Action Control Button */}
-                                            {currentRide.rideStatus === 'driver_assigned' && (
-                                                <button
-                                                    onClick={() => advanceRideStatus(currentRide, 'driver_arriving')}
-                                                    className="w-full rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer"
-                                                >
-                                                    📦 Goods Loaded successfully
-                                                </button>
-                                            )}
-
-                                            {currentRide.rideStatus === 'driver_arriving' && (
-                                                <button
-                                                    onClick={() => advanceRideStatus(currentRide, 'ride_started')}
-                                                    className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer"
-                                                >
-                                                    🚚 Start Journey
-                                                </button>
-                                            )}
-
-                                            {currentRide.rideStatus === 'ride_started' && (
-                                                <button
-                                                    onClick={() => advanceRideStatus(currentRide, 'ride_completed')}
-                                                    className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer"
-                                                >
-                                                    🏁 Delivered (Mark Complete)
-                                                </button>
-                                            )}
 
                                             {currentRide.rideStatus !== 'driver_assigned' && 
                                              currentRide.rideStatus !== 'driver_arriving' && 
@@ -1148,22 +1362,6 @@ const DriverDashboard = () => {
                                             Accept a pending ride request first. After acceptance, the current ride and its status controls will appear here automatically.
                                         </div>
                                     )}
-                                </div>
-
-                                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-                                    <h3 className="text-lg font-bold text-slate-900 mb-4">Quick Withdrawal</h3>
-                                    <div className="space-y-3">
-                                        <input
-                                            value={withdrawAmount}
-                                            onChange={(e) => setWithdrawAmount(e.target.value)}
-                                            className="w-full rounded-xl border border-slate-300 px-4 py-3"
-                                            placeholder="Amount"
-                                            type="number"
-                                        />
-                                        <button onClick={requestWithdrawal} className="w-full rounded-xl bg-emerald-600 text-white font-semibold py-3">
-                                            Submit Withdrawal Request
-                                        </button>
-                                    </div>
                                 </div>
                             </div>
 
@@ -1257,7 +1455,7 @@ const DriverDashboard = () => {
                                     </div>
                                 )}
                             </div>
-                        </>
+                        </div>
                     )}
 
                     {activeTab === 'wallet' && (
@@ -1354,8 +1552,8 @@ const DriverDashboard = () => {
 
             {/* SOS Emergency Modal */}
             {isSosOpen && (
-                <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-red-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border-2 border-red-600 animate-in zoom-in duration-300">
+                <div onClick={() => setIsSosOpen(false)} className="fixed inset-0 z-[3000] flex items-center justify-center bg-red-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border-2 border-red-600 animate-in zoom-in duration-300">
                         <div className="flex items-center gap-3 text-red-600 mb-4">
                             <AlertTriangle className="h-8 w-8 fill-red-100 text-red-600 animate-pulse" />
                             <h3 className="text-xl font-black tracking-tight">SOS EMERGENCY ALERT</h3>
@@ -1380,24 +1578,38 @@ const DriverDashboard = () => {
 
             {/* Incoming Shipment Request Modal Pop-Up Alert */}
             {activeRequestPopup && (
-                <div className="fixed inset-0 z-[3500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200">
+                <div onClick={() => setActiveRequestPopup(null)} className="fixed inset-0 z-[3500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200">
                         {/* Header */}
-                        <div className="bg-indigo-600 text-white px-6 py-5 flex items-center justify-between relative">
+                        <div className={`px-6 py-5 flex items-center justify-between relative text-white ${
+                            activeRequestPopup.isTransporterAssigned ? 'bg-gradient-to-r from-purple-700 to-indigo-800' : 'bg-gradient-to-r from-sky-700 to-indigo-700'
+                        }`}>
                             <div>
-                                <span className="text-[10px] uppercase font-black tracking-widest text-indigo-200 bg-indigo-700/30 px-2.5 py-1 rounded-full border border-indigo-500/20">
-                                    New Ride Request
+                                <span className={`text-[10px] uppercase font-black tracking-widest px-2.5 py-1 rounded-full border ${
+                                    activeRequestPopup.isTransporterAssigned
+                                        ? 'text-amber-200 bg-amber-500/20 border-amber-400/30'
+                                        : 'text-sky-200 bg-sky-500/20 border-sky-300/30'
+                                }`}>
+                                    {activeRequestPopup.isTransporterAssigned ? '🏢 Customer Request Assigned by Transporter' : '👤 Direct Customer Request'}
                                 </span>
                                 <h3 className="text-lg font-black mt-1.5 tracking-tight flex items-center gap-1.5">
                                     <span>Ride Request #{activeRequestPopup.id}</span>
                                 </h3>
+                                <p className="text-xs font-bold text-white/90 mt-1 flex items-center gap-1">
+                                    <span>Source:</span>
+                                    <span className="text-white font-extrabold underline">
+                                        {activeRequestPopup.isTransporterAssigned 
+                                            ? `Customer (${activeRequestPopup.customerName || 'Customer'}) • Assigned by Transporter (${activeRequestPopup.transporterName || 'Your Transporter'})`
+                                            : `Customer (${activeRequestPopup.customerName || 'Direct Booking'})`}
+                                    </span>
+                                </p>
                             </div>
                             <button 
                                 onClick={() => {
                                     setDismissedRequestIds(prev => ({ ...prev, [activeRequestPopup.id]: true }));
                                     setActiveRequestPopup(null);
                                 }} 
-                                className="p-1.5 hover:bg-white/10 rounded-lg text-indigo-300 hover:text-white transition-colors cursor-pointer"
+                                className="p-1.5 hover:bg-white/10 rounded-lg text-indigo-200 hover:text-white transition-colors cursor-pointer"
                             >
                                 <X className="h-5 w-5" />
                             </button>
@@ -1405,6 +1617,32 @@ const DriverDashboard = () => {
 
                         {/* Body */}
                         <div className="p-6 space-y-5">
+                            {/* Request Source Banner Card */}
+                            {activeRequestPopup.isTransporterAssigned ? (
+                                <div className="bg-purple-50 border border-purple-200/80 rounded-2xl p-3.5 flex items-center gap-3 shadow-sm">
+                                    <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center font-extrabold text-base shrink-0 shadow-md">
+                                        🏢
+                                    </div>
+                                    <div>
+                                        <span className="text-[10px] font-black uppercase tracking-wider text-purple-600 block">Fleet Order Assignment</span>
+                                        <p className="text-xs font-bold text-purple-950">
+                                            Request by Customer (<strong className="text-purple-700 font-extrabold">{activeRequestPopup.customerName || 'Customer'}</strong>) and assigned by your Transporter (<strong className="text-purple-700 font-extrabold">{activeRequestPopup.transporterName || 'your Transporter'}</strong>).
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="bg-sky-50 border border-sky-200/80 rounded-2xl p-3.5 flex items-center gap-3 shadow-sm">
+                                    <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center font-extrabold text-base shrink-0 shadow-md">
+                                        👤
+                                    </div>
+                                    <div>
+                                        <span className="text-[10px] font-black uppercase tracking-wider text-sky-600 block">Direct Customer Request</span>
+                                        <p className="text-xs font-bold text-sky-950">
+                                            Requested directly by Customer: <strong className="text-sky-700 font-extrabold">{activeRequestPopup.customerName || 'Direct Booking'}</strong>
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
                             {/* Route Segment Card */}
                             <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4 space-y-3">
                                 <div className="flex gap-3">
@@ -1537,6 +1775,108 @@ const DriverDashboard = () => {
                     </div>
                 </div>
             )}
+            {/* Post-Ride Driver Payment Collection Modal */}
+            {showPaymentCollectionModal && (
+                <div onClick={() => setShowPaymentCollectionModal(null)} className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-100 text-center space-y-4 relative">
+                        <button 
+                            onClick={() => setShowPaymentCollectionModal(null)}
+                            className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 text-xl font-bold cursor-pointer"
+                        >
+                            ✕
+                        </button>
+                        <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-3xl mx-auto shadow-sm">
+                            💰
+                        </div>
+                        <div>
+                            <h3 className="text-xl font-black text-slate-900">Collect Ride Payment</h3>
+                            <p className="text-xs text-slate-500 mt-1">Select how customer is paying for Ride #{showPaymentCollectionModal.id}</p>
+                        </div>
+
+                        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center">
+                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Total Ride Fare</p>
+                            <p className="text-3xl font-black text-slate-900 mt-1">₹{showPaymentCollectionModal.estimatedFare || showPaymentCollectionModal.finalFare || 0}</p>
+                        </div>
+
+                        <div className="space-y-3 pt-2">
+                            {/* Option 1: Cash Collected */}
+                            <button
+                                onClick={async () => {
+                                    try {
+                                        const pType = showPaymentCollectionModal.rideStatus === 'ride_started' ? 'PostRide' : 'Advance';
+                                        await apiClient.post(`/Vehicle/${showPaymentCollectionModal.id}/processPayment?paymentMethod=COD&paymentType=${pType}`);
+                                        const targetRide = showPaymentCollectionModal;
+                                        setShowPaymentCollectionModal(null);
+                                        if (targetRide.rideStatus === 'ride_started') {
+                                            await advanceRideStatus(targetRide, 'ride_completed');
+                                        } else {
+                                            alert("Advance cash payment recorded successfully!");
+                                            fetchDashboardData();
+                                        }
+                                    } catch(e) {
+                                        console.error("Payment error:", e);
+                                    }
+                                }}
+                                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-xl text-sm shadow-md transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
+                            >
+                                💵 Cash Collected (COD)
+                            </button>
+
+                            {/* Option 2: Show Dynamic UPI QR Scanner */}
+                            <div className="border-t border-slate-100 pt-3">
+                                <p className="text-xs font-bold text-slate-500 mb-2">OR Customer Pay via UPI QR:</p>
+                                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner mb-3">
+                                    <img 
+                                        src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=upi://pay?pa=navgatix@bank%26pn=Navgatix%26am=${showPaymentCollectionModal.estimatedFare || 100}%26tr=${showPaymentCollectionModal.id}`}
+                                        alt="UPI QR Scanner" 
+                                        className="w-44 h-44 mx-auto rounded-xl"
+                                    />
+                                </div>
+                                <button
+                                    onClick={async () => {
+                                        try {
+                                            const pType = showPaymentCollectionModal.rideStatus === 'ride_started' ? 'PostRide' : 'Advance';
+                                            await apiClient.post(`/Vehicle/${showPaymentCollectionModal.id}/processPayment?paymentMethod=UPI&paymentType=${pType}`);
+                                            const targetRide = showPaymentCollectionModal;
+                                            setShowPaymentCollectionModal(null);
+                                            if (targetRide.rideStatus === 'ride_started') {
+                                                await advanceRideStatus(targetRide, 'ride_completed');
+                                            } else {
+                                                alert("Advance UPI payment confirmed!");
+                                                fetchDashboardData();
+                                            }
+                                        } catch(e) {
+                                            console.error("Payment error:", e);
+                                        }
+                                    }}
+                                    className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl text-sm shadow-md transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
+                                >
+                                    📱 Confirm UPI Payment Received
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Mobile Bottom Quick Navigation */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-slate-900 border-t border-slate-800 text-white shadow-2xl flex items-center justify-around py-2 px-1 pb-safe">
+                <button onClick={() => setActiveTab('overview')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'overview' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <Home className="h-5 w-5" />
+                    Home
+                </button>
+                <button onClick={() => setActiveTab('wallet')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'wallet' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <Wallet className="h-5 w-5" />
+                    Wallet
+                </button>
+                <button onClick={() => setActiveTab('shipments')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'shipments' ? 'text-primary-400' : 'text-slate-400'}`}>
+                    <Package className="h-5 w-5" />
+                    Shipments
+                </button>
+                <button onClick={() => navigate('/profile')} className={`flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400`}>
+                    <User className="h-5 w-5" />
+                    Profile
+                </button>
+            </div>
         </div>
     );
 };

@@ -106,6 +106,9 @@ namespace satguruApp.Service.ViewModels
         public bool? IsAvailable { get; set; }
         public bool? IsDeleted { get; set; }
         public bool IsPaid { get; set; }
+        public string? PaymentStatus { get; set; }
+        public string? PaymentMethod { get; set; }
+        public string? TransactionId { get; set; }
         public int? DeptStateId { get; set; }
         public int? DeptCityId { get; set; }
         public int? ArrivalStateId { get; set; }
@@ -113,7 +116,12 @@ namespace satguruApp.Service.ViewModels
         public int? CT_VehicleType { get; set; }
         public int? CTBodyType { get; set; }
         public int? CTTyreType { get; set; }
+        public string? VehicleTypeName { get; set; }
+        public string? BodyTypeName { get; set; }
+        public string? TyreTypeName { get; set; }
         public string? Message { get; set; }
+        public bool IsTransporterAssigned { get; set; } = false;
+        public string? TransporterName { get; set; }
 
         public virtual ICollection<Payment>? Payments { get; set; } = new List<Payment>();
         public virtual VehicleViewModel? Vehicle { get; set; }

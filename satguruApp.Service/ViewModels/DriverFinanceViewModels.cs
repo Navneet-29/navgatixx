@@ -11,6 +11,7 @@ namespace satguruApp.Service.ViewModels
         public decimal CurrentBalance { get; set; }
         public decimal PendingWithdrawalAmount { get; set; }
         public int PendingWithdrawalCount { get; set; }
+        public bool HasTransactionPIN { get; set; }
     }
 
     public class RidePaymentRequestViewModel
@@ -26,6 +27,13 @@ namespace satguruApp.Service.ViewModels
         public string? DriverUserId { get; set; }
         public decimal Amount { get; set; }
         public string? Note { get; set; }
+        public string? TransactionPIN { get; set; }
+    }
+
+    public class SetPinRequestViewModel
+    {
+        public string? DriverUserId { get; set; }
+        public string? PIN { get; set; }
     }
 
     public class WithdrawalActionViewModel
