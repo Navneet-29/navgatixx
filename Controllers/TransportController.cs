@@ -341,12 +341,31 @@ namespace navgatix.Controllers
             driver.TransporterId = null;
             _db.Drivers.Update(driver);
 
+            // Unassign any fleet vehicles currently linked to this driver
+            var standingBookings = await _db.Bookings
+                .Where(b => b.DriverId == driver.Id 
+                            && b.VehicleId.HasValue 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
+                .ToListAsync();
+
+            foreach (var b in standingBookings)
+            {
+                b.CT_BookingStatus = satguruApp.Service.ViewModels.RideStatus.Cancelled;
+                b.IsAvailable = true;
+                if (b.VehicleId.HasValue)
+                {
+                    var veh = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == b.VehicleId.Value);
+                    if (veh != null) veh.IsAvailable = true;
+                }
+            }
+
             var releaseNotification = new Notification
             {
                 Id = Guid.NewGuid(),
                 UserId = driver.UserId,
                 Title = "Released from Fleet",
-                Message = $"You have been released from {transporterName}'s fleet and are now working independently.",
+                Message = $"VEHICLE_UNASSIGN|You have been released from {transporterName}'s fleet and are now working independently.",
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             };
@@ -356,7 +375,7 @@ namespace navgatix.Controllers
             _db.Notifications.Update(notification);
             await _db.SaveChangesAsync();
 
-            return Ok(new { message = "Leave request approved. Driver has been released." });
+            return Ok(new { message = "Leave request approved. Driver has been released and vehicle unassigned." });
         }
 
         [HttpPost("markNotificationRead")]
@@ -388,19 +407,91 @@ namespace navgatix.Controllers
             driver.TransporterId = null;
             _db.Drivers.Update(driver);
 
+            // Cancel any active bookings and unassign all linked vehicles
+            var standingBookings = await _db.Bookings
+                .Where(b => b.DriverId == driverGuid 
+                            && b.VehicleId.HasValue 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
+                .ToListAsync();
+
+            foreach (var b in standingBookings)
+            {
+                b.CT_BookingStatus = satguruApp.Service.ViewModels.RideStatus.Cancelled;
+                b.IsAvailable = true;
+                if (b.VehicleId.HasValue)
+                {
+                    var veh = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == b.VehicleId.Value);
+                    if (veh != null) veh.IsAvailable = true;
+                }
+            }
+
             var notification = new Notification
             {
                 Id = Guid.NewGuid(),
                 UserId = driver.UserId,
                 Title = "Removed from Fleet",
-                Message = $"{transporter.CompanyName ?? "Your transporter"} has removed you from their fleet.",
+                Message = $"VEHICLE_UNASSIGN|{transporter.CompanyName ?? "Your transporter"} has removed you from their fleet.",
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             };
             _db.Notifications.Add(notification);
             await _db.SaveChangesAsync();
 
-            return Ok(new { message = "Driver removed successfully from fleet." });
+            return Ok(new { message = "Driver removed and vehicle unassigned successfully." });
+        }
+
+        [HttpPost("unassignDriver")]
+        public async Task<IActionResult> UnassignDriver([FromQuery] string transporterUserId, [FromQuery] string driverId)
+        {
+            if (string.IsNullOrEmpty(transporterUserId) || string.IsNullOrEmpty(driverId))
+                return BadRequest("transporterUserId and driverId are required.");
+
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
+            if (transporter == null) return NotFound("Transporter profile not found.");
+
+            var driverGuid = Guid.Parse(driverId);
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverGuid && d.TransporterId == transporter.Id);
+            if (driver == null) return NotFound("Driver not found in your fleet.");
+
+            // Cancel all active standing or assigned bookings for this driver
+            var activeAssignments = await _db.Bookings
+                .Where(b => b.DriverId == driverGuid 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
+                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
+                .ToListAsync();
+
+            foreach (var b in activeAssignments)
+            {
+                b.CT_BookingStatus = satguruApp.Service.ViewModels.RideStatus.Cancelled;
+                b.IsAvailable = true;
+                if (b.VehicleId.HasValue)
+                {
+                    var veh = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == b.VehicleId.Value);
+                    if (veh != null)
+                    {
+                        veh.IsAvailable = true;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(driver.UserId))
+            {
+                var notification = new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = driver.UserId,
+                    Title = "Vehicle Unassigned",
+                    Message = "VEHICLE_UNASSIGN|Vehicle assignment has been removed by your transporter.",
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _db.Notifications.Add(notification);
+            }
+
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Driver unassigned successfully." });
         }
 
         [HttpGet("getRelationshipNotifications")]
@@ -476,15 +567,45 @@ namespace navgatix.Controllers
             var assignment = await _db.Bookings
                 .Where(b => b.DriverId == driver.Id 
                             && b.VehicleId.HasValue 
-                            && b.CustomerId == null 
-                            && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
+                            && b.CustomerId == null
                             && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
                 .OrderByDescending(b => b.CreatedAt)
                 .FirstOrDefaultAsync();
 
-            if (assignment == null) return Ok(new { vehicleId = (Guid?)null });
+            if (assignment == null || !assignment.VehicleId.HasValue)
+            {
+                // Fallback to in-progress customer trip
+                assignment = await _db.Bookings
+                    .Where(b => b.DriverId == driver.Id 
+                                && b.VehicleId.HasValue 
+                                && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted
+                                && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
+                    .OrderByDescending(b => b.CreatedAt)
+                    .FirstOrDefaultAsync();
+            }
 
-            return Ok(new { vehicleId = assignment.VehicleId });
+            if (assignment == null || !assignment.VehicleId.HasValue) return Ok(new { vehicleId = (Guid?)null });
+
+            var vehicle = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == assignment.VehicleId.Value && v.IsDeleted != true);
+            if (vehicle == null) return Ok(new { vehicleId = (Guid?)null });
+
+            // If driver is independent, they should only see vehicles they personally registered, not previous transporter fleet vehicles
+            if (!driver.TransporterId.HasValue && vehicle.TransporterId.HasValue)
+            {
+                return Ok(new { vehicleId = (Guid?)null });
+            }
+
+            return Ok(new { 
+                vehicleId = vehicle.Id,
+                vehicleName = vehicle.VehicleName,
+                vehicleNumber = vehicle.VehicleNumber,
+                capacityTons = vehicle.CapacityTons,
+                rcNumber = vehicle.RCNumber,
+                ctBodyType = vehicle.CTBodyType,
+                ctTyreType = vehicle.CTTyreType,
+                ctVehicleType = vehicle.CT_VehicleType,
+                assignedAt = assignment.CreatedAt
+            });
         }
 
         [HttpGet("debugSystemState")]
@@ -550,10 +671,19 @@ namespace navgatix.Controllers
                 return BadRequest("Shipment is already assigned.");
             }
 
-            var claimed = await _db.Notifications.AnyAsync(n => n.Message.StartsWith($"CLAIM|{bookingId}|"));
-            if (claimed)
+            var existingClaim = await _db.Notifications
+                .Where(n => n.Message.StartsWith($"CLAIM|{bookingId}|") && n.IsRead != true)
+                .OrderByDescending(n => n.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (existingClaim != null)
             {
-                return BadRequest("Shipment already claimed by another transporter.");
+                if (existingClaim.Message.StartsWith($"CLAIM|{bookingId}|{transporter.Id}"))
+                {
+                    // Already claimed by this same transporter, return success
+                    return Ok(new { message = "Shipment already claimed by you. Assign a driver to proceed." });
+                }
+                return BadRequest(new { message = "Shipment already claimed by another transporter." });
             }
 
             var claimMessage = $"CLAIM|{bookingId}|{transporter.Id}";
@@ -731,22 +861,9 @@ namespace navgatix.Controllers
                         var parts = claimNotif.Message.Split('|');
                         var transporterId = long.Parse(parts[2]);
 
-                        if (driver.TransporterId != transporterId)
+                        if (driver.TransporterId.HasValue && driver.TransporterId.Value != transporterId)
                         {
-                            return BadRequest("Shipment claimed by another transporter and not assigned to you.");
-                        }
-
-                        var assignPrefix = $"ASSIGN_SHIPMENT|{bookingId}|{transporterId}|";
-                        var isAssigned = await _db.Notifications.AnyAsync(n => n.UserId == driverUserId && n.Message.StartsWith(assignPrefix) && n.IsRead != true);
-                        if (!isAssigned)
-                        {
-                            return BadRequest("Shipment not assigned to you by your transporter.");
-                        }
-                    }
-                    else
-                    {
-                        if (driver.TransporterId.HasValue)
-                        {
+                            return BadRequest("Shipment claimed by another transporter and not assigned to your fleet.");
                         }
                     }
 
@@ -781,7 +898,24 @@ namespace navgatix.Controllers
                         booking.VehicleId = driverVehicleBooking.VehicleId;
                     }
 
-                    // Notify Transporter that driver accepted the assignment
+                    // 1. Mark all pending notifications for this booking as read so popup immediately disappears from all other drivers and transporters
+                    var pendingBookingNotifs = await _db.Notifications
+                        .Where(n => (n.Title == "New Ride Request" || n.Title == "New Shipment Assignment" || n.Title == "New Order Request Received")
+                                    && n.IsRead != true
+                                    && n.Message != null
+                                    && (n.Message.Contains($"Ride #{booking.Id}") 
+                                        || n.Message.StartsWith($"CLAIM|{booking.Id}|") 
+                                        || n.Message.StartsWith($"ASSIGN_SHIPMENT|{booking.Id}|")
+                                        || n.Message.StartsWith($"NEW_ORDER_REQUEST|{booking.Id}|")))
+                        .ToListAsync();
+
+                    foreach (var n in pendingBookingNotifs)
+                    {
+                        n.IsRead = true;
+                        _db.Notifications.Update(n);
+                    }
+
+                    // 2. Notify Transporter that driver accepted the assignment
                     if (driver.TransporterId.HasValue)
                     {
                         var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value);
@@ -789,6 +923,7 @@ namespace navgatix.Controllers
                         {
                             var tNotif = new satguruApp.DLL.Models.Notification
                             {
+                                Id = Guid.NewGuid(),
                                 UserId = transporter.UserId,
                                 Message = $"DRIVER_ACCEPT_ORDER|{booking.Id}|{driver.Name}|{booking.PickupAddress} ➔ {booking.DropAddress}|{booking.EstimatedFare}",
                                 CreatedAt = DateTime.UtcNow,
@@ -799,11 +934,12 @@ namespace navgatix.Controllers
                         }
                     }
 
-                    // Notify Customer that driver is assigned
+                    // 3. Notify Customer that driver is assigned
                     if (!string.IsNullOrEmpty(booking.CustomerId))
                     {
                         var cNotif = new satguruApp.DLL.Models.Notification
                         {
+                            Id = Guid.NewGuid(),
                             UserId = booking.CustomerId,
                             Message = $"DRIVER_ASSIGNED|{booking.Id}|{driver.Name}|{driver.Phone}|{booking.PickupAddress} ➔ {booking.DropAddress}",
                             CreatedAt = DateTime.UtcNow,

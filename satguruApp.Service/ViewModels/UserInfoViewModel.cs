@@ -41,7 +41,7 @@ namespace satguruApp.Service.ViewModels
         public string? Gender { get; set; }
         public DateTime? LicenseExpiry { get; set; }
         public string? LicenseNumber { get; set; }
-        public string RoleName { get; set; }
+        public string? RoleName { get; set; }
         public string? Status { get; set; }
         public string? NewPassword { get; set; }
         public string? Description { get; set; }

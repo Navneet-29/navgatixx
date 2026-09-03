@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using satguruApp.DLL.Models;
 using satguruApp.Service.Services.Interfaces;
 using satguruApp.Service.ViewModels;
@@ -82,10 +82,72 @@ namespace satguruApp.Service.Services
             _db.Complaints.Add(complaint);
             await _db.SaveChangesAsync();
 
+            // Notify Transporter if the ride was driven by a driver attached to a Transporter
+            if (model.RideId.HasValue && model.RideId.Value > 0)
+            {
+                try
+                {
+                    var ride = await _db.Bookings
+                        .Include(b => b.Driver)
+                        .Include(b => b.Vehicle)
+                        .FirstOrDefaultAsync(b => b.Id == model.RideId.Value);
+
+                    if (ride != null && ride.Driver != null)
+                    {
+                        var driver = ride.Driver;
+                        var driverName = driver.Name ?? "Driver";
+                        var vehicleNo = ride.Vehicle?.VehicleNumber ?? "N/A";
+                        var issueTypeTitle = complaint.Issue_Type == "ride_issue" ? "Ride Issue" : "Customer Complaint";
+
+                        // 1. If driver belongs to a Transporter, notify Transporter
+                        if (driver.TransporterId.HasValue)
+                        {
+                            var transporter = await _db.TransporterDetails
+                                .FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value && t.IsDeleted != true);
+
+                            if (transporter != null && !string.IsNullOrEmpty(transporter.UserId))
+                            {
+                                var transporterNotif = new Notification
+                                {
+                                    Id = Guid.NewGuid(),
+                                    UserId = transporter.UserId,
+                                    Title = $"⚠️ {issueTypeTitle} Reported: Ride #{ride.Id}",
+                                    Message = $"DISPUTE_ALERT|Ride #{ride.Id}|Driver: {driverName} ({vehicleNo})|Issue: {complaint.Issue_Type}|Details: {complaint.Description}",
+                                    CreatedAt = DateTime.UtcNow,
+                                    IsRead = false,
+                                };
+                                _db.Notifications.Add(transporterNotif);
+                            }
+                        }
+
+                        // 2. Also notify the Driver directly
+                        if (!string.IsNullOrEmpty(driver.UserId))
+                        {
+                            var driverNotif = new Notification
+                            {
+                                Id = Guid.NewGuid(),
+                                UserId = driver.UserId,
+                                Title = $"⚠️ Customer {issueTypeTitle}: Ride #{ride.Id}",
+                                Message = $"DISPUTE_ALERT|Ride #{ride.Id}|Customer reported an issue: \"{complaint.Description}\"",
+                                CreatedAt = DateTime.UtcNow,
+                                IsRead = false,
+                            };
+                            _db.Notifications.Add(driverNotif);
+                        }
+
+                        await _db.SaveChangesAsync();
+                    }
+                }
+                catch (Exception)
+                {
+                    // Fail silently so complaint is never blocked
+                }
+            }
+
             return new DisputeResultViewModel
             {
                 Success = true,
-                Message = "Dispute reported successfully.",
+                Message = "Dispute reported successfully. Both admin and transporter have been notified.",
                 ComplaintId = complaint.Id,
             };
         }

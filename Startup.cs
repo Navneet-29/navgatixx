@@ -119,14 +119,7 @@ namespace navgatix
             {
                 options.AddPolicy("AllowReactApp", policy =>
                 {
-                    policy.WithOrigins(
-                        "http://localhost:5006", 
-                        "http://localhost:5173", 
-                        "http://localhost:3000",
-                        "capacitor://localhost",
-                        "http://localhost",
-                        "https://localhost:7048"
-                    )
+                    policy.SetIsOriginAllowed(origin => true)
                     .AllowAnyHeader()
                     .AllowAnyMethod()
                     .AllowCredentials();
@@ -183,7 +176,7 @@ namespace navgatix
                 c.RoutePrefix = "swagger";
             });
 
-            app.UseHttpsRedirection();
+            // app.UseHttpsRedirection(); // Disabled to allow direct HTTP API calls from mobile apps without 307 redirect
             app.UseRouting();
 
             app.UseCors("AllowReactApp");

@@ -64,6 +64,15 @@ namespace satguruApp.Service.ViewModels
         public double? DriverRating { get; set; }
         public string? RideStatus { get; set; }
         public long? ActiveBookingId { get; set; }
+        public string? PickupAddress { get; set; }
+        public string? DropAddress { get; set; }
+        public decimal? EstimatedFare { get; set; }
+        public decimal? FinalFare { get; set; }
+        public decimal? TodaysEarnings { get; set; }
+        public decimal? TotalEarnings { get; set; }
+        public int? TotalTrips { get; set; }
+        public decimal? CurrentLatitude { get; set; }
+        public decimal? CurrentLongitude { get; set; }
     }
     public class TransporterViewModel : DriverViewModel
     {

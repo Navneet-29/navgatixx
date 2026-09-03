@@ -144,6 +144,12 @@ namespace navgatix.Controllers
         {
             return Ok(await _vehicleService.RejectRideRequestByTransporterAsync(bookingId, transporterUserId));
         }
+        [HttpPatch("{bookingId}/cancelRide")]
+        [AllowAnonymous]
+        public async Task<IActionResult> CancelRide(long bookingId, [FromQuery] string userId = "")
+        {
+            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, "cancelled", null));
+        }
         [HttpGet("ride/{bookingId}")]
         [AllowAnonymous]
         public async Task<IActionResult> GetRide(long bookingId)

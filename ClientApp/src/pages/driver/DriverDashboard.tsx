@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
-import { DollarSign, Truck, Clock, Wallet, Send, MapPin, Route, History, MessageCircle, LayoutDashboard, LogOut, Settings, Menu, ChevronDown, CreditCard, Bell, Key, User, Star, Phone, AlertTriangle, X, Home, Package, Lock } from 'lucide-react';
+import { useEffect, useMemo, useState, useRef } from 'react';
+import { DollarSign, Truck, Clock, Wallet, Send, MapPin, Route, History, MessageCircle, LayoutDashboard, LogOut, Settings, ChevronDown, CreditCard, Bell, Key, User, Star, Phone, AlertTriangle, X, QrCode, Banknote, CheckCircle2, Navigation } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import apiClient from '../../api/apiClient';
 import ChatPanel from '../../components/ChatPanel';
@@ -7,10 +7,8 @@ import { disablePushNotifications } from '../../lib/firebaseMessaging';
 import { logoutFirebaseAuth } from '../../lib/firebaseAuth';
 import { useAuth } from '../../hooks/useAuth';
 import DriverWallet from '../../components/DriverWallet';
-import NotificationSettings from '../../components/NotificationSettings';
-import SecuritySettings from '../../components/SecuritySettings';
-import TrackingMap from '../../components/TrackingMap';
-import { VerificationPendingGuard } from '../../components/VerificationPendingGuard';
+import ProfilePage from '../ProfilePage';
+import DriverRouteMap from '../../components/DriverRouteMap';
 
 type RideStatus = 'request_for_ride' | 'driver_assigned' | 'driver_arriving' | 'ride_started' | 'ride_completed' | 'cancelled';
 
@@ -31,36 +29,41 @@ type RideItem = {
     dropLat?: number;
     dropLng?: number;
     isPaid?: boolean;
-    isTransporterAssigned?: boolean;
+    ctVehicleType?: number;
+    ctBodyType?: number;
+    ctTyreType?: number;
+    customerProfilePic?: string;
+    assignedByTransporter?: boolean;
     transporterName?: string;
-    vehicleTypeName?: string;
-    bodyTypeName?: string;
-    tyreTypeName?: string;
 };
 
 const ACTIVE_STATUSES: RideStatus[] = ['driver_assigned', 'driver_arriving', 'ride_started'];
 
 const DriverDashboard = () => {
     const navigate = useNavigate();
-    const [activeTab, setActiveTab] = useState<'overview' | 'wallet' | 'shipments' | 'settings'>('overview');
+    const [activeTab, setActiveTab] = useState<'overview' | 'rides' | 'wallet' | 'settings' | 'profile'>('overview');
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [settingsExpanded, setSettingsExpanded] = useState(false);
+    const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
     const [user, setUser] = useState<any>(null);
     const [wallet, setWallet] = useState<any>(null);
-    const [loadingWallet, setLoadingWallet] = useState(false);
+    const [, setLoadingWallet] = useState(false);
     const [rideRequests, setRideRequests] = useState<RideItem[]>([]);
     const [rides, setRides] = useState<RideItem[]>([]);
-    const [loadingRides, setLoadingRides] = useState(false);
+    const [, setLoadingRides] = useState(false);
     const [disputeDrafts, setDisputeDrafts] = useState<Record<number, string>>({});
-    const [isTracking, setIsTracking] = useState(false);
+    const [isTracking, setIsTracking] = useState<boolean>(() => {
+        try {
+            const saved = localStorage.getItem('driver_online_status');
+            return saved !== null ? JSON.parse(saved) : true;
+        } catch {
+            return true;
+        }
+    });
     const [currentPosition, setCurrentPosition] = useState<{ lat: number; lng: number } | null>(null);
     const [chatBookingId, setChatBookingId] = useState<number | null>(null);
     const [directChatRoomName, setDirectChatRoomName] = useState<string | null>(null);
     const lastSeenNotifIdsRef = useRef<Set<string>>(new Set());
-    const handledCancellationNotifIdsRef = useRef<Set<string>>(new Set());
-    const [driverSummaryCard, setDriverSummaryCard] = useState<any>(null);
-    const [driverMetrics, setDriverMetrics] = useState<{ distanceKm: number; etaMins: number; phase: 'pickup' | 'delivery' } | null>(null);
-    const [showPaymentCollectionModal, setShowPaymentCollectionModal] = useState<any>(null);
     const [chatToast, setChatToast] = useState<{
         id: string;
         bookingId?: number;
@@ -68,8 +71,18 @@ const DriverDashboard = () => {
         senderName: string;
         messageText: string;
     } | null>(null);
+    const [commonTypesMap, setCommonTypesMap] = useState<Record<number, string>>({});
     const [activeVehicleId, setActiveVehicleId] = useState<string | null>(null);
-    const [assignedVehicleInfo, setAssignedVehicleInfo] = useState<any>(null);
+    const [assignedVehicle, setAssignedVehicle] = useState<{
+        vehicleId: string;
+        vehicleName?: string;
+        vehicleNumber?: string;
+        capacityTons?: number;
+        rcNumber?: string;
+        ctBodyType?: number;
+        ctTyreType?: number;
+        ctVehicleType?: number;
+    } | null>(null);
     const [activeTransporter, setActiveTransporter] = useState<any>({ isIndependent: true });
     const [relationshipRequests, setRelationshipRequests] = useState<any[]>([]);
     const [outboundJoinRequests, setOutboundJoinRequests] = useState<any[]>([]);
@@ -81,7 +94,21 @@ const DriverDashboard = () => {
     const [acceptState, setAcceptState] = useState<'idle' | 'loading_route' | 'ready'>('idle');
     const [isSosOpen, setIsSosOpen] = useState(false);
     const [activeRequestPopup, setActiveRequestPopup] = useState<RideItem | null>(null);
-    const [dismissedRequestIds, setDismissedRequestIds] = useState<Record<string | number, boolean>>({});
+    const [dismissedRequestIds, setDismissedRequestIds] = useState<Record<number, boolean>>({});
+    const [paymentModalRide, setPaymentModalRide] = useState<RideItem | null>(null);
+    const [paymentMode, setPaymentMode] = useState<'Cash' | 'QR'>('QR');
+    const [customPaymentAmount, setCustomPaymentAmount] = useState<string>('');
+    const [isRecordingPayment, setIsRecordingPayment] = useState(false);
+
+    const prevRideRequestIdsRef = useRef<Set<number>>(new Set());
+
+    const playNotificationAlertSound = () => {
+        try {
+            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+            audio.volume = 0.8;
+            audio.play().catch(() => {});
+        } catch (e) {}
+    };
 
 
     const driverUserId = user?.userId || user?.UserId || user?.id || '';
@@ -137,29 +164,39 @@ const DriverDashboard = () => {
             try {
                 const requestRes = await apiClient.get(`/Vehicle/driverRideRequests/${driverUserId}`);
                 const requestData = Array.isArray(requestRes.data) ? requestRes.data : [];
-                setRideRequests(
-                    requestData
-                        .filter((item) => item?.Id || item?.id)
-                        .map((item) => ({
-                            id: Number(item.id ?? item.Id),
-                            customerName: item.customerName ?? item.CustomerName,
-                            pickupAddress: item.pickupAddress ?? item.PickupAddress,
-                            dropAddress: item.dropAddress ?? item.DropAddress,
-                            goodsType: item.goodsType ?? item.GoodsType,
-                            goodsWeight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
-                            estimatedFare: Number(item.estimatedFare ?? item.EstimatedFare ?? 0),
-                            finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
-                            rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
-                            createdAt: item.createdAt ?? item.CreatedAt,
-                            scheduledTime: item.scheduledTime ?? item.ScheduledTime,
-                            pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
-                            pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
-                            dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
-                            dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
-                            isTransporterAssigned: !!(item.isTransporterAssigned ?? item.IsTransporterAssigned),
-                            transporterName: item.transporterName ?? item.TransporterName,
-                        }))
-                );
+                const formattedRequests = requestData
+                    .filter((item) => item?.Id || item?.id)
+                    .map((item) => ({
+                        id: Number(item.id ?? item.Id),
+                        customerName: item.customerName ?? item.CustomerName,
+                        pickupAddress: item.pickupAddress ?? item.PickupAddress,
+                        dropAddress: item.dropAddress ?? item.DropAddress,
+                        goodsType: item.goodsType ?? item.GoodsType,
+                        goodsWeight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
+                        estimatedFare: Number(item.estimatedFare ?? item.EstimatedFare ?? 0),
+                        finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
+                        rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
+                        createdAt: item.createdAt ?? item.CreatedAt,
+                        scheduledTime: item.scheduledTime ?? item.ScheduledTime,
+                        pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
+                        pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
+                        dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
+                        dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
+                        ctVehicleType: Number(item.ct_VehicleType ?? item.CT_VehicleType ?? item.cT_VehicleType ?? 0),
+                        ctBodyType: Number(item.ctBodyType ?? item.CTBodyType ?? item.cTBodyType ?? 0),
+                        ctTyreType: Number(item.ctTyreType ?? item.CTTyreType ?? item.cTTyreType ?? 0),
+                        assignedByTransporter: !!(item.assignedByTransporter ?? item.AssignedByTransporter),
+                        transporterName: item.transporterName ?? item.TransporterName,
+                    }));
+
+                // Check for new requests
+                const currentReqIds = new Set(formattedRequests.map(r => r.id));
+                const hasBrandNew = formattedRequests.some(r => !prevRideRequestIdsRef.current.has(r.id));
+                if (hasBrandNew && prevRideRequestIdsRef.current.size > 0) {
+                    playNotificationAlertSound();
+                }
+                prevRideRequestIdsRef.current = currentReqIds;
+                setRideRequests(formattedRequests);
 
                 const res = await apiClient.get(`/Vehicle/driverRides/${driverUserId}`);
                 const data = Array.isArray(res.data) ? res.data : [];
@@ -175,18 +212,18 @@ const DriverDashboard = () => {
                         finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
                         rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
                         createdAt: item.createdAt ?? item.CreatedAt,
+                        scheduledTime: item.scheduledTime ?? item.ScheduledTime,
+                        isPaid: !!(item.isPaid ?? item.IsPaid),
                         pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
                         pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
                         dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
                         dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
-                        scheduledTime: item.scheduledTime ?? item.ScheduledTime,
-                        isPaid: !!(item.isPaid ?? item.IsPaid),
+                        goodsWeight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
                     }));
 
                 setRides(normalized);
-
             } catch (err) {
-                console.error(err);
+                console.error("Error loading rides:", err);
             } finally {
                 setLoadingRides(false);
             }
@@ -202,47 +239,76 @@ const DriverDashboard = () => {
         };
 
         const loadActiveVehicleId = async () => {
-            try {
-                const res = await apiClient.get(`/Transport/getDriverActiveVehicle?userId=${driverUserId}`);
-                setActiveVehicleId(res.data?.vehicleId || res.data?.VehicleId || null);
+        try {
+            const res = await apiClient.get(`/Transport/getDriverActiveVehicle?userId=${driverUserId}`);
+            const vId = res.data?.vehicleId || res.data?.VehicleId || null;
+            setActiveVehicleId(vId);
+            if (vId) {
+                setAssignedVehicle({
+                    vehicleId: vId,
+                    vehicleName: res.data?.vehicleName || res.data?.VehicleName,
+                    vehicleNumber: res.data?.vehicleNumber || res.data?.VehicleNumber,
+                    capacityTons: res.data?.capacityTons || res.data?.CapacityTons,
+                    rcNumber: res.data?.rcNumber || res.data?.RcNumber,
+                    ctBodyType: res.data?.ctBodyType || res.data?.CtBodyType,
+                    ctTyreType: res.data?.ctTyreType || res.data?.CtTyreType,
+                    ctVehicleType: res.data?.ctVehicleType || res.data?.CtVehicleType
+                });
+            } else {
+                setAssignedVehicle(null);
+            }
+        } catch (err) {
+            console.error("Failed to load active vehicle ID:", err);
+            setAssignedVehicle(null);
+        }
+    };
 
-                const assignedRes = await apiClient.get(`/Transport/getDriverAssignedVehicle/${driverUserId}`);
-                if (assignedRes.data?.isAssigned && assignedRes.data?.vehicle) {
-                    setAssignedVehicleInfo(assignedRes.data.vehicle);
-                } else {
-                    setAssignedVehicleInfo(null);
+        const loadUserProfile = async () => {
+            try {
+                const res = await apiClient.get(`/User/getUserDetail/${driverUserId}`);
+                if (res.data) {
+                    setUser((prev: any) => ({
+                        ...prev,
+                        ...res.data,
+                        profilePic: res.data.profilePic || res.data.ProfilePic || prev?.profilePic || prev?.ProfilePic,
+                        name: res.data.name || res.data.firstName || prev?.name,
+                        firstName: res.data.firstName || prev?.firstName
+                    }));
+                    if (typeof res.data.isOnline === 'boolean') {
+                        setIsTracking(res.data.isOnline);
+                        try {
+                            localStorage.setItem('driver_online_status', JSON.stringify(res.data.isOnline));
+                        } catch {}
+                    }
                 }
             } catch (err) {
-                console.error("Failed to load active vehicle ID:", err);
+                console.log("Note loading driver user profile:", err);
             }
         };
 
-        const loadDriverSummaryCard = async () => {
+        const loadCommonTypes = async () => {
             try {
-                const res = await apiClient.get(`/Vehicle/driverSummaryCard/${driverUserId}`);
-                setDriverSummaryCard(res.data);
-            } catch (err) {}
+                const res = await apiClient.get('/CommonType/getall');
+                const list = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.data) ? res.data.data : []);
+                const map: Record<number, string> = {};
+                list.forEach((item: any) => {
+                    const id = Number(item.id || item.Id);
+                    const name = item.name || item.Name || '';
+                    if (id && name) map[id] = name;
+                });
+                setCommonTypesMap(map);
+            } catch (err) {
+                console.error("Failed to load common types:", err);
+            }
         };
 
+        loadCommonTypes();
+        loadUserProfile();
         loadWallet();
         loadRides();
         loadRelationshipDetails();
         loadRating();
         loadActiveVehicleId();
-        loadDriverSummaryCard();
-    }, [driverUserId]);
-
-    const fetchDashboardData = useCallback(async () => {
-        if (!driverUserId) return;
-        try {
-            const [wRes, sRes] = await Promise.all([
-                apiClient.get(`/DriverFinance/wallet/${driverUserId}`).catch(() => null),
-                apiClient.get(`/Vehicle/driverSummaryCard/${driverUserId}`).catch(() => null)
-            ]);
-            if (wRes?.data) setWallet(wRes.data);
-            if (sRes?.data) setDriverSummaryCard(sRes.data);
-            refreshRides();
-        } catch (e) {}
     }, [driverUserId]);
 
     // Poll ride requests and relationship notifications
@@ -252,30 +318,15 @@ const DriverDashboard = () => {
         const intervalId = setInterval(async () => {
             refreshRides();
             loadRelationshipDetails();
-            try {
-                const res = await apiClient.get(`/Transport/getDriverActiveVehicle?userId=${driverUserId}`);
-                setActiveVehicleId(res.data?.vehicleId || res.data?.VehicleId || null);
-
-                const assignedRes = await apiClient.get(`/Transport/getDriverAssignedVehicle/${driverUserId}`);
-                if (assignedRes.data?.isAssigned && assignedRes.data?.vehicle) {
-                    setAssignedVehicleInfo(assignedRes.data.vehicle);
-                } else {
-                    setAssignedVehicleInfo(null);
-                }
-            } catch (err) {
-                console.error("Failed to poll active vehicle ID:", err);
-            }
-        }, 5000);
+            loadActiveVehicle();
+        }, 3000);
         return () => clearInterval(intervalId);
     }, [driverUserId]);
 
-    // Track incoming requests to trigger pop-up modals
+    // Track incoming requests to trigger pop-up modals (only when driver is Online / isTracking)
     useEffect(() => {
-        if (rideRequests.length > 0) {
-            const activeReq = rideRequests.find(r => {
-                const dismissKey = r.isTransporterAssigned ? `transporter_${r.id}` : `${r.id}`;
-                return !dismissedRequestIds[dismissKey];
-            });
+        if (isTracking && rideRequests.length > 0) {
+            const activeReq = rideRequests.find(r => !dismissedRequestIds[r.id]);
             if (activeReq) {
                 setActiveRequestPopup(activeReq);
             } else {
@@ -284,50 +335,151 @@ const DriverDashboard = () => {
         } else {
             setActiveRequestPopup(null);
         }
-    }, [rideRequests, dismissedRequestIds]);
+    }, [rideRequests, dismissedRequestIds, isTracking]);
 
-    // Background Geolocation Tracking
+    // Background Geolocation Tracking (Always acquires high accuracy GPS when toggle is ON)
     useEffect(() => {
-        if (!driverUserId || !isTracking) return;
+        if (!isTracking) return;
 
         const watchId = navigator.geolocation.watchPosition(
             (pos) => {
                 setCurrentPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
             },
-            (err) => console.error('Geolocation error:', err),
-            { enableHighAccuracy: true }
+            (err) => {
+                console.warn('Geolocation access warning:', err.message);
+                // Fallback attempt to get one-time position
+                navigator.geolocation.getCurrentPosition(
+                    (p) => setCurrentPosition({ lat: p.coords.latitude, lng: p.coords.longitude }),
+                    () => {}
+                );
+            },
+            { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
         );
 
         return () => navigator.geolocation.clearWatch(watchId);
-    }, [driverUserId, isTracking]);
+    }, [isTracking]);
 
-    // Periodic Backend Ping (every 5 seconds)
+    // Periodic Backend Ping (every 5 seconds) syncing driver live location to backend & customer tracking
     useEffect(() => {
         if (!driverUserId || !isTracking || !currentPosition) return;
 
         const interval = setInterval(async () => {
             try {
                 const vehicleId = activeVehicleId;
-                if (!vehicleId) return;
+                const activeBooking = rides.find(r => r.rideStatus && ACTIVE_STATUSES.includes(r.rideStatus));
 
                 await apiClient.post('/Vehicle/saveLiveVehicleTracking', {
-                    vehicleId: vehicleId,
-                    deviceId: 'web-browser',
+                    vehicleId: vehicleId || undefined,
+                    bookingId: activeBooking?.id || undefined,
+                    userId: driverUserId,
+                    deviceId: 'driver-gps-web',
+                    latitude: currentPosition.lat,
+                    longitude: currentPosition.lng,
                     lastLatitude: currentPosition.lat,
                     lastLongitude: currentPosition.lng
                 });
             } catch (err) {
-                console.error('Location ping failed:', err);
+                console.error('Driver live location ping failed:', err);
             }
         }, 5000);
 
         return () => clearInterval(interval);
-    }, [driverUserId, isTracking, currentPosition, activeVehicleId]);
+    }, [driverUserId, isTracking, currentPosition, activeVehicleId, rides]);
 
     const currentRide = useMemo(
-        () => rides.find((ride) => ride.rideStatus && ACTIVE_STATUSES.includes(ride.rideStatus)) || null,
+        () => rides.find((ride) => ride.rideStatus && ACTIVE_STATUSES.includes(ride.rideStatus) && (ride.customerName || ride.pickupAddress || ride.dropAddress)) || null,
         [rides]
     );
+
+    // Keep track of accumulated live GPS distance during active journeys
+    const prevPositionRef = useRef<{ lat: number; lng: number } | null>(null);
+    const [liveOdometerKm, setLiveOdometerKm] = useState<number>(() => {
+        try {
+            const todayStr = new Date().toISOString().split('T')[0];
+            const stored = localStorage.getItem(`driver_odometer_${todayStr}`);
+            return stored ? parseFloat(stored) : 0;
+        } catch {
+            return 0;
+        }
+    });
+
+    useEffect(() => {
+        if (!currentPosition || !isTracking) return;
+
+        // If driver has an active ride and position moves, accumulate differential distance
+        if (currentRide && prevPositionRef.current) {
+            const distDelta = calculateDistance(
+                prevPositionRef.current.lat,
+                prevPositionRef.current.lng,
+                currentPosition.lat,
+                currentPosition.lng
+            );
+
+            // Filter out GPS jitter (< 15 meters) and teleport anomalies (> 50 km)
+            if (distDelta >= 0.015 && distDelta < 50) {
+                setLiveOdometerKm((prev) => {
+                    const next = Math.round((prev + distDelta) * 100) / 100;
+                    try {
+                        const todayStr = new Date().toISOString().split('T')[0];
+                        localStorage.setItem(`driver_odometer_${todayStr}`, String(next));
+                    } catch {}
+                    return next;
+                });
+            }
+        }
+        prevPositionRef.current = currentPosition;
+    }, [currentPosition, isTracking, currentRide]);
+
+    // Calculate total today's distance traveled (Completed rides today + live active progress distance)
+    const todaysDistanceTraveledKm = useMemo(() => {
+        const todayStr = new Date().toISOString().split('T')[0];
+
+        // 1. Completed rides today
+        const completedDistToday = rides
+            .filter(r => r.rideStatus === 'ride_completed' && r.createdAt && r.createdAt.startsWith(todayStr))
+            .reduce((acc, r) => {
+                if (r.pickupLat && r.pickupLng && r.dropLat && r.dropLng) {
+                    return acc + calculateDistance(r.pickupLat, r.pickupLng, r.dropLat, r.dropLng);
+                }
+                return acc;
+            }, 0);
+
+        // 2. Active ride distance progress
+        let activeRideDist = 0;
+        if (currentRide) {
+            if (currentRide.rideStatus === 'ride_started' && currentRide.pickupLat && currentRide.pickupLng && currentRide.dropLat && currentRide.dropLng) {
+                const totalRouteDist = calculateDistance(currentRide.pickupLat, currentRide.pickupLng, currentRide.dropLat, currentRide.dropLng);
+                if (currentPosition) {
+                    const remainingDist = calculateDistance(currentPosition.lat, currentPosition.lng, currentRide.dropLat, currentRide.dropLng);
+                    const progressed = Math.max(0, totalRouteDist - remainingDist);
+                    activeRideDist = Math.max(progressed, liveOdometerKm);
+                } else {
+                    activeRideDist = liveOdometerKm;
+                }
+            } else if (currentRide.rideStatus === 'driver_arriving' && currentRide.pickupLat && currentRide.pickupLng) {
+                if (currentPosition) {
+                    activeRideDist = liveOdometerKm;
+                }
+            } else {
+                activeRideDist = liveOdometerKm;
+            }
+        }
+
+        const total = Math.max(completedDistToday + activeRideDist, liveOdometerKm);
+        return Math.round(total * 10) / 10;
+    }, [rides, currentRide, currentPosition, liveOdometerKm]);
+
+    const activeRideProgressKm = useMemo(() => {
+        if (!currentRide) return 0;
+        if (currentRide.rideStatus === 'ride_started' && currentRide.pickupLat && currentRide.pickupLng && currentRide.dropLat && currentRide.dropLng) {
+            const totalRouteDist = calculateDistance(currentRide.pickupLat, currentRide.pickupLng, currentRide.dropLat, currentRide.dropLng);
+            if (currentPosition) {
+                const remainingDist = calculateDistance(currentPosition.lat, currentPosition.lng, currentRide.dropLat, currentRide.dropLng);
+                return Math.round(Math.max(0, totalRouteDist - remainingDist) * 10) / 10;
+            }
+        }
+        return Math.round(liveOdometerKm * 10) / 10;
+    }, [currentRide, currentPosition, liveOdometerKm]);
 
     const rideHistory = useMemo(
         () => rides.filter((ride) => !currentRide || ride.id !== currentRide.id),
@@ -367,30 +519,39 @@ const DriverDashboard = () => {
         if (!driverUserId) return;
         const requestRes = await apiClient.get(`/Vehicle/driverRideRequests/${driverUserId}`);
         const requestData = Array.isArray(requestRes.data) ? requestRes.data : [];
-        setRideRequests(
-            requestData
-                .filter((item) => item?.Id || item?.id)
-                .map((item) => ({
-                    id: Number(item.id ?? item.Id),
-                    customerName: item.customerName ?? item.CustomerName,
-                    pickupAddress: item.pickupAddress ?? item.PickupAddress,
-                    dropAddress: item.dropAddress ?? item.DropAddress,
-                    goodsType: item.goodsType ?? item.GoodsType,
-                    goodsWeight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
-                    estimatedFare: Number(item.estimatedFare ?? item.EstimatedFare ?? 0),
-                    finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
-                    rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
-                    createdAt: item.createdAt ?? item.CreatedAt,
-                    scheduledTime: item.scheduledTime ?? item.ScheduledTime,
-                    pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
-                    pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
-                    dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
-                    dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
-                    vehicleTypeName: item.vehicleTypeName ?? item.VehicleTypeName,
-                    bodyTypeName: item.bodyTypeName ?? item.BodyTypeName,
-                    tyreTypeName: item.tyreTypeName ?? item.TyreTypeName,
-                }))
-        );
+        const formattedRequests = requestData
+            .filter((item) => item?.Id || item?.id)
+            .map((item) => ({
+                id: Number(item.id ?? item.Id),
+                customerName: item.customerName ?? item.CustomerName,
+                customerProfilePic: item.customerProfilePic ?? item.CustomerProfilePic,
+                pickupAddress: item.pickupAddress ?? item.PickupAddress,
+                dropAddress: item.dropAddress ?? item.DropAddress,
+                goodsType: item.goodsType ?? item.GoodsType,
+                goodsWeight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
+                estimatedFare: Number(item.estimatedFare ?? item.EstimatedFare ?? 0),
+                finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
+                rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
+                createdAt: item.createdAt ?? item.CreatedAt,
+                scheduledTime: item.scheduledTime ?? item.ScheduledTime,
+                pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
+                pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
+                dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
+                dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
+                ctVehicleType: item.ctVehicleType ?? item.CT_VehicleType ?? item.ct_VehicleType,
+                ctBodyType: item.ctBodyType ?? item.CTBodyType ?? item.ct_BodyType,
+                ctTyreType: item.ctTyreType ?? item.CTTyreType ?? item.ct_TyreType,
+                assignedByTransporter: !!(item.assignedByTransporter ?? item.AssignedByTransporter),
+                transporterName: item.transporterName ?? item.TransporterName,
+            }));
+
+        const currentReqIds = new Set(formattedRequests.map(r => r.id));
+        const hasBrandNew = formattedRequests.some(r => !prevRideRequestIdsRef.current.has(r.id));
+        if (hasBrandNew && prevRideRequestIdsRef.current.size > 0) {
+            playNotificationAlertSound();
+        }
+        prevRideRequestIdsRef.current = currentReqIds;
+        setRideRequests(formattedRequests);
 
         const res = await apiClient.get(`/Vehicle/driverRides/${driverUserId}`);
         const data = Array.isArray(res.data) ? res.data : [];
@@ -399,6 +560,7 @@ const DriverDashboard = () => {
             .map((item) => ({
                 id: Number(item.id ?? item.Id),
                 customerName: item.customerName ?? item.CustomerName,
+                customerProfilePic: item.customerProfilePic ?? item.CustomerProfilePic,
                 pickupAddress: item.pickupAddress ?? item.PickupAddress,
                 dropAddress: item.dropAddress ?? item.DropAddress,
                 goodsType: item.goodsType ?? item.GoodsType,
@@ -406,12 +568,16 @@ const DriverDashboard = () => {
                 finalFare: Number(item.finalFare ?? item.FinalFare ?? 0),
                 rideStatus: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
                 createdAt: item.createdAt ?? item.CreatedAt,
+                scheduledTime: item.scheduledTime ?? item.ScheduledTime,
+                isPaid: !!(item.isPaid ?? item.IsPaid),
                 pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
                 pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
                 dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
                 dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
-                scheduledTime: item.scheduledTime ?? item.ScheduledTime,
-                isPaid: !!(item.isPaid ?? item.IsPaid),
+                goodsWeight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
+                ctVehicleType: item.ctVehicleType ?? item.CT_VehicleType ?? item.ct_VehicleType,
+                ctBodyType: item.ctBodyType ?? item.CTBodyType ?? item.ct_BodyType,
+                ctTyreType: item.ctTyreType ?? item.CTTyreType ?? item.ct_TyreType,
             }));
         setRides(normalized);
     };
@@ -429,13 +595,8 @@ const DriverDashboard = () => {
             const newNotifications = Array.isArray(notifRes.data) ? notifRes.data : [];
             newNotifications.forEach((n: any) => {
                 if (!lastSeenNotifIdsRef.current.has(n.id) && lastSeenNotifIdsRef.current.size > 0) {
+                    playNotificationAlertSound();
                     if (n.message && (n.message.startsWith('CHAT_MESSAGE|') || n.message.startsWith('CHAT_MESSAGE_DIRECT|'))) {
-                        try {
-                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                            audio.volume = 0.6;
-                            audio.play().catch(() => {});
-                        } catch (e) {}
-
                         const parts = n.message.split('|');
                         const senderAndText = parts[2] || '';
                         const msgParts = senderAndText.split(':');
@@ -459,37 +620,44 @@ const DriverDashboard = () => {
                                 messageText
                             });
                         }
-                    }
-
-                    if (n.message && n.message.startsWith('ASSIGN_SHIPMENT|')) {
-                        try {
-                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                            audio.volume = 0.8;
-                            audio.play().catch(() => {});
-                        } catch (e) {}
-                    }
-
-                }
-
-                if (n.message && (n.message.startsWith('RIDE_CANCELLED_BY_CUSTOMER|') || n.message.startsWith('RIDE_CANCELLED_BY_TRANSPORTER|'))) {
-                    if (!handledCancellationNotifIdsRef.current.has(n.id)) {
-                        handledCancellationNotifIdsRef.current.add(n.id);
-                        apiClient.post(`/Transport/markNotificationRead?notificationId=${n.id}`).catch(() => {});
-
+                    } else if (n.message && (n.message.startsWith('VEHICLE_ASSIGN|') || n.message.startsWith('VEHICLE_UNASSIGN|'))) {
                         const parts = n.message.split('|');
-                        const bId = Number(parts[1]);
-                        const cancellerName = parts[2] || 'User';
-                        const role = n.message.startsWith('RIDE_CANCELLED_BY_CUSTOMER|') ? 'Customer' : 'Transporter';
-
+                        const info = parts[1] || '';
+                        const isAssign = n.message.startsWith('VEHICLE_ASSIGN|');
+                        setChatToast({
+                            id: n.id,
+                            senderName: isAssign ? '🚚 Vehicle Assigned' : '⚠️ Vehicle Unassigned',
+                            messageText: isAssign ? `Assigned to: ${info}` : info
+                        });
+                        // Immediately refresh active vehicle state without full page refresh
                         try {
-                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                            audio.volume = 0.8;
-                            audio.play().catch(() => {});
+                            apiClient.get(`/Transport/getDriverActiveVehicle?userId=${driverUserId}`).then(res => {
+                                const vId = res.data?.vehicleId || res.data?.VehicleId || null;
+                                setActiveVehicleId(vId);
+                                if (vId) {
+                                    setAssignedVehicle({
+                                        vehicleId: vId,
+                                        vehicleName: res.data?.vehicleName || res.data?.VehicleName,
+                                        vehicleNumber: res.data?.vehicleNumber || res.data?.VehicleNumber,
+                                        capacityTons: res.data?.capacityTons || res.data?.CapacityTons,
+                                        rcNumber: res.data?.rcNumber || res.data?.RcNumber,
+                                        ctBodyType: res.data?.ctBodyType || res.data?.CtBodyType,
+                                        ctTyreType: res.data?.ctTyreType || res.data?.CtTyreType,
+                                        ctVehicleType: res.data?.ctVehicleType || res.data?.CtVehicleType
+                                    });
+                                } else {
+                                    setAssignedVehicle(null);
+                                }
+                            });
                         } catch (e) {}
-
-                        alert(`Shipment #${bId} was cancelled by ${role} (${cancellerName}).`);
-                        
-                        setActiveRequestPopup((prev: any) => (prev && Number(prev.id) === bId ? null : prev));
+                    } else if (n.message && n.message.startsWith('RIDE_CANCELLED|')) {
+                        const parts = n.message.split('|');
+                        const info = parts[2] || parts[1] || 'Ride cancelled';
+                        setChatToast({
+                            id: n.id,
+                            senderName: '⚠️ Ride Cancelled',
+                            messageText: info
+                        });
                         refreshRides();
                     }
                 }
@@ -500,6 +668,32 @@ const DriverDashboard = () => {
             setOutboundJoinRequests(Array.isArray(outboundRes.data) ? outboundRes.data : []);
         } catch (err) {
             console.error("Failed to load driver relationship data:", err);
+        }
+    };
+
+    const loadActiveVehicle = async () => {
+        if (!driverUserId) return;
+        try {
+            const res = await apiClient.get(`/Transport/getDriverActiveVehicle?userId=${driverUserId}`);
+            const vId = res.data?.vehicleId || res.data?.VehicleId || null;
+            setActiveVehicleId(vId);
+            if (vId) {
+                setAssignedVehicle({
+                    vehicleId: vId,
+                    vehicleName: res.data?.vehicleName || res.data?.VehicleName,
+                    vehicleNumber: res.data?.vehicleNumber || res.data?.VehicleNumber,
+                    capacityTons: res.data?.capacityTons || res.data?.CapacityTons,
+                    rcNumber: res.data?.rcNumber || res.data?.RcNumber,
+                    ctBodyType: res.data?.ctBodyType || res.data?.CtBodyType,
+                    ctTyreType: res.data?.ctTyreType || res.data?.CtTyreType,
+                    ctVehicleType: res.data?.ctVehicleType || res.data?.CtVehicleType
+                });
+            } else {
+                setAssignedVehicle(null);
+            }
+        } catch (err) {
+            console.error("Failed to load active vehicle ID:", err);
+            setAssignedVehicle(null);
         }
     };
 
@@ -551,36 +745,25 @@ const DriverDashboard = () => {
             loadRelationshipDetails();
         } catch (err: any) {
             console.error("Failed to send leave request:", err);
+            alert(err?.response?.data || err?.response?.data?.message || "Failed to request leave.");
         }
     };
-
-    const hasActiveDelivery = useMemo(() => {
-        return rides.some(r => r.rideStatus && ['driver_assigned', 'driver_arriving', 'ride_started'].includes(r.rideStatus));
-    }, [rides]);
-
     const handleToggleOnline = async () => {
-        if (hasActiveDelivery && isTracking) {
-            const activeRide = rides.find(r => r.rideStatus && ['driver_assigned', 'driver_arriving', 'ride_started'].includes(r.rideStatus));
-            alert(`⚠️ Location tracking cannot be turned off while delivering an active shipment (Ride #${activeRide?.id || ''}). Please complete or cancel your active delivery first.`);
-            return;
-        }
-
         const nextState = !isTracking;
         if (!nextState) {
             const confirmed = window.confirm("Are you sure you want to turn off your online status?");
             if (!confirmed) return;
         }
         setIsTracking(nextState);
+        try {
+            localStorage.setItem('driver_online_status', JSON.stringify(nextState));
+        } catch {}
         const vehicleId = activeVehicleId;
         try {
             const driverUserId = user?.userId || user?.id || user?.UserId || '';
             await apiClient.post(`/Transport/toggleDriverOnlineStatus?vehicleId=${vehicleId || ''}&isOnline=${nextState}&driverUserId=${driverUserId}`);
-        } catch (err: any) {
+        } catch (err) {
             console.error("Failed to toggle online status on backend:", err);
-            if (err?.response?.data?.message) {
-                alert(err.response.data.message);
-                setIsTracking(true);
-            }
         }
     };
 
@@ -633,9 +816,6 @@ const DriverDashboard = () => {
             if (nextStatus === 'driver_assigned' && driverId) {
                 params.driverId = driverId;
             }
-            if (nextStatus === 'cancelled') {
-                params.cancelledBy = 'Driver';
-            }
 
             const res = await apiClient.patch(`/Vehicle/${ride.id}/rideStatus`, null, { params });
             alert(res.data?.message || res.data?.Message || 'Ride status updated.');
@@ -644,6 +824,10 @@ const DriverDashboard = () => {
             alert(err?.response?.data?.message || err?.response?.data?.Message || 'Ride status update failed.');
         }
     };
+
+
+
+    /* requestWithdrawal handled via DriverWallet component */
 
     const reportRideIssue = async (ride: RideItem) => {
         const description = (disputeDrafts[ride.id] || '').trim();
@@ -681,20 +865,6 @@ const DriverDashboard = () => {
     };
 
     if (!user) return null;
-
-    const isVerificationPending = user?.profileStatus === 'PENDING' || user?.profileStatus === 'SUBMITTED' || user?.ProfileStatus === 'PENDING' || user?.ProfileStatus === 'SUBMITTED';
-
-    if (isVerificationPending) {
-        return (
-            <VerificationPendingGuard
-                roleName="Driver"
-                userName={user?.firstName || user?.name}
-                onRefreshStatus={() => {
-                    window.location.reload();
-                }}
-            />
-        );
-    }
 
     return (
         <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
@@ -788,15 +958,30 @@ const DriverDashboard = () => {
                         )}
                     </nav>
 
-                    <div onClick={() => navigate('/profile')} className="bg-slate-50 hover:bg-indigo-50/50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3 cursor-pointer transition-all">
-                        <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
-                            {(user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D').toUpperCase()}
+                    <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shrink-0">
+                            {user?.profilePic || user?.ProfilePic ? (
+                                <img 
+                                    src={
+                                        (user.profilePic || user.ProfilePic).startsWith('http') || (user.profilePic || user.ProfilePic).startsWith('data:')
+                                            ? (user.profilePic || user.ProfilePic)
+                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${(user.profilePic || user.ProfilePic).startsWith('/') ? '' : '/'}${user.profilePic || user.ProfilePic}`
+                                    } 
+                                    alt="Driver" 
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                        (e.target as HTMLElement).style.display = 'none';
+                                    }}
+                                />
+                            ) : (
+                                <span>{user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}</span>
+                            )}
                         </div>
                         <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold text-slate-900 truncate">{user?.firstName || user?.name || 'Driver'}</p>
-                            <p className="text-xs text-slate-500 truncate">DRIVER</p>
+                            <p className="text-xs text-slate-500 truncate text-uppercase">DRIVER</p>
                         </div>
-                        <button onClick={(e) => { e.stopPropagation(); handleLogout(); }} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
+                        <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
                             <LogOut className="h-4 w-4" />
                         </button>
                     </div>
@@ -805,34 +990,126 @@ const DriverDashboard = () => {
 
             {/* Main Content */}
             <main className="flex-1 overflow-y-auto relative z-10 flex flex-col">
-                {(user?.profileStatus === 'PENDING' || user?.profileStatus === 'SUBMITTED' || user?.profileVerified === false) && (
-                    <VerificationPendingGuard 
-                        roleName="Driver" 
-                        userName={user?.firstName || user?.name || 'Driver'} 
-                        onRefreshStatus={() => window.location.reload()} 
-                    />
-                )}
                 {/* Mobile Header Bar */}
-                <header className="md:hidden h-16 bg-slate-900 text-white flex items-center justify-between px-4 sticky top-0 z-20 shadow-md">
-                    <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-white/10 rounded-lg">
-                        <Menu className="h-6 w-6 text-white" />
-                    </button>
-                    <span className="font-extrabold tracking-tight">Navgatix</span>
-                    <button onClick={() => navigate('/profile')} className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all">
-                        {(user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D').toUpperCase()}
-                    </button>
+                <header className="md:hidden h-16 bg-slate-900 text-white flex items-center justify-between px-4 sticky top-0 z-40 shadow-md relative">
+                    <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-primary-600 rounded-xl flex items-center justify-center shadow-md">
+                            <Truck className="text-white h-4 w-4" />
+                        </div>
+                        <span className="font-extrabold tracking-tight text-xl">Navgatix</span>
+                    </div>
+                    
+                    {/* Circle Avatar with Dropdown Toggle */}
+                    <div className="relative">
+                        <button 
+                            onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
+                            title="Account & Settings"
+                            className="w-9 h-9 rounded-full overflow-hidden bg-gradient-to-tr from-indigo-600 to-primary-500 flex items-center justify-center text-white font-black border-2 border-white/40 shadow-md active:scale-90 transition-all text-xs cursor-pointer"
+                        >
+                            {user?.profilePic || user?.ProfilePic ? (
+                                <img 
+                                    src={
+                                        (user.profilePic || user.ProfilePic).startsWith('http') || (user.profilePic || user.ProfilePic).startsWith('data:')
+                                            ? (user.profilePic || user.ProfilePic)
+                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${(user.profilePic || user.ProfilePic).startsWith('/') ? '' : '/'}${user.profilePic || user.ProfilePic}`
+                                    } 
+                                    alt="Driver" 
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                        (e.target as HTMLElement).style.display = 'none';
+                                    }}
+                                />
+                            ) : (
+                                <span>{user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}</span>
+                            )}
+                        </button>
+
+                        {/* Top-Right Profile Dropdown Menu */}
+                        {profileDropdownOpen && (
+                            <>
+                                <div 
+                                    className="fixed inset-0 z-40" 
+                                    onClick={() => setProfileDropdownOpen(false)}
+                                />
+                                <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-slate-100 py-2 z-50 animate-in fade-in slide-in-from-top-2 duration-150 text-slate-800">
+                                    <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/50 rounded-t-2xl">
+                                        <p className="text-xs font-bold text-slate-900 truncate">
+                                            {user?.firstName || user?.name || 'Driver Account'}
+                                        </p>
+                                        <p className="text-[11px] text-slate-500 truncate">
+                                            {user?.email || user?.phoneNumber || 'Driver'}
+                                        </p>
+                                    </div>
+
+                                    <div className="py-1">
+                                        <button
+                                            onClick={() => {
+                                                setActiveTab('profile');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left"
+                                        >
+                                            <User className="h-4 w-4 text-indigo-600" /> Profile Info
+                                        </button>
+
+                                        <button
+                                            onClick={() => {
+                                                setActiveTab('wallet');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left"
+                                        >
+                                            <Wallet className="h-4 w-4 text-indigo-600" /> Wallet & Earnings
+                                        </button>
+
+                                        <button
+                                            onClick={() => {
+                                                setActiveTab('settings');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left"
+                                        >
+                                            <Bell className="h-4 w-4 text-indigo-600" /> Notification Settings
+                                        </button>
+
+                                        <button
+                                            onClick={() => {
+                                                setActiveTab('settings');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left"
+                                        >
+                                            <Key className="h-4 w-4 text-indigo-600" /> Security & Password
+                                        </button>
+                                    </div>
+
+                                    <div className="border-t border-slate-100 pt-1">
+                                        <button
+                                            onClick={() => {
+                                                setProfileDropdownOpen(false);
+                                                handleLogout();
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-red-600 hover:bg-red-50 transition-colors text-left"
+                                        >
+                                            <LogOut className="h-4 w-4" /> Logout
+                                        </button>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                    </div>
                 </header>
 
-                <div className="flex-1 overflow-y-auto relative p-6 md:p-8 max-w-7xl w-full mx-auto">
+                <div className="flex-1 overflow-y-auto relative px-3 sm:px-4 py-4 md:p-8 max-w-7xl w-full mx-auto pb-24 md:pb-8">
                     <div className="absolute top-0 left-0 w-full h-64 bg-slate-900 text-white z-0">
                         <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1586528116311-ad8ed7c159bf?q=80&w=2670&auto=format&fit=crop')] bg-cover bg-center opacity-10 mix-blend-overlay"></div>
                         <div className="absolute inset-0 bg-gradient-to-b from-transparent to-slate-900"></div>
                     </div>
 
                     <div className="relative z-10">
-                    {(activeTab === 'overview' || activeTab === 'shipments') && (
-                        <div className="space-y-8">
-                            <header className="flex justify-between items-end mb-10 h-24">
+                    {activeTab === 'overview' && (
+                        <>
+                            <header className="flex justify-between items-end mb-8 h-24">
                                 <div className="text-white space-y-1">
                                     <p className="text-indigo-200 font-bold tracking-wide text-sm uppercase">Hii, {user?.firstName || user?.name || 'Driver'}</p>
                                     <h1 className="text-3xl font-extrabold tracking-tight">Driver Control Panel</h1>
@@ -842,6 +1119,89 @@ const DriverDashboard = () => {
                                     </div>
                                 </div>
                             </header>
+
+                            {/* Prominent Inbound Transporter Invitations Banner at Top */}
+                            {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|') && !req.message.startsWith('VEHICLE_ASSIGN|') && !req.message.startsWith('VEHICLE_UNASSIGN|')).map(req => {
+                                const parts = req.message.split('|');
+                                const companyName = parts[3] || 'Transporter';
+                                const email = parts[2] || '';
+                                return (
+                                    <div key={req.id} className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl p-5 mb-6 relative z-10 shadow-xl border border-blue-400/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in slide-in-from-top-4 duration-300">
+                                        <div className="space-y-1">
+                                            <span className="text-[10px] uppercase font-black tracking-widest text-blue-200 bg-white/15 px-2.5 py-0.5 rounded-full border border-white/20">
+                                                Fleet Invitation
+                                            </span>
+                                            <h4 className="font-extrabold text-base flex items-center gap-2 mt-1">
+                                                <span>🏢 {companyName}</span>
+                                            </h4>
+                                            <p className="text-xs text-blue-100 font-medium">
+                                                Invited you to join their fleet ({email}). Accept to connect with this transporter.
+                                            </p>
+                                        </div>
+                                        <div className="flex gap-2.5 shrink-0">
+                                            <button 
+                                                onClick={() => handleRejectRelationship(req.id)}
+                                                className="bg-white/15 hover:bg-white/25 border border-white/20 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition-all cursor-pointer"
+                                            >
+                                                Decline
+                                            </button>
+                                            <button 
+                                                onClick={() => handleAcceptRelationship(req.id)}
+                                                className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-5 py-2.5 rounded-xl text-xs shadow-lg shadow-emerald-500/30 transition-all cursor-pointer"
+                                            >
+                                                Accept Invitation
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+
+                            {/* Prominent Incoming Customer Ride Requests Banner at Top */}
+                            {rideRequests.length > 0 && (
+                                <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white rounded-2xl p-5 mb-6 relative z-10 shadow-xl border border-emerald-400/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in slide-in-from-top-4 duration-300">
+                                    <div className="space-y-1.5 flex-1 min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="animate-ping h-2 w-2 rounded-full bg-yellow-300" />
+                                            <span className="text-[10px] uppercase font-black tracking-widest text-emerald-100 bg-white/15 px-2.5 py-0.5 rounded-full border border-white/20">
+                                                {rideRequests.length === 1 ? 'New Incoming Ride Request' : `${rideRequests.length} New Ride Requests Available`}
+                                            </span>
+                                        </div>
+                                        <h4 className="font-black text-base truncate">
+                                            {rideRequests[0].pickupAddress} ➔ {rideRequests[0].dropAddress}
+                                        </h4>
+                                        <div className="flex flex-wrap items-center gap-3 text-xs text-emerald-100 font-bold">
+                                            <span>Fare: <strong className="text-yellow-300 text-sm">{toCurrency(rideRequests[0].estimatedFare)}</strong></span>
+                                            <span>•</span>
+                                            <span>Goods: {rideRequests[0].goodsType || 'General Freight'}</span>
+                                            {rideRequests[0].goodsWeight ? (
+                                                <>
+                                                    <span>•</span>
+                                                    <span>{rideRequests[0].goodsWeight} kg</span>
+                                                </>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-2.5 shrink-0">
+                                        <button 
+                                            onClick={() => setActiveRequestPopup(rideRequests[0])}
+                                            className="bg-white/20 hover:bg-white/30 border border-white/25 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition-all cursor-pointer"
+                                        >
+                                            View Details
+                                        </button>
+                                        <button 
+                                            onClick={() => {
+                                                const req = rideRequests[0];
+                                                setDismissedRequestIds(prev => ({ ...prev, [req.id]: true }));
+                                                setActiveRequestPopup(null);
+                                                acceptRide(req);
+                                            }}
+                                            className="bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-black px-5 py-2.5 rounded-xl text-xs shadow-lg shadow-yellow-500/30 transition-all cursor-pointer"
+                                        >
+                                            Accept Immediately
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             
                             {relationshipRequests.some(n => n.message && n.message.startsWith('VEHICLE_ASSIGN|')) && (
                                 <div className="bg-gradient-to-r from-indigo-950 to-indigo-900 text-white rounded-2xl p-5 mb-8 relative z-10 shadow-lg border border-indigo-700/50 flex items-center justify-between animate-in slide-in-from-top-4 duration-300">
@@ -866,69 +1226,284 @@ const DriverDashboard = () => {
                                 </div>
                             )}
 
-                            <div className="mb-8">
-                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mt-2">
-                                    <p className="text-indigo-200">Current ride controls, ride history, wallet summary, withdrawals, and issue reporting.</p>
-                                    <div className="flex items-center gap-3 bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl px-4 py-2 shadow-lg">
-                                        <div className="flex flex-col items-end">
-                                            <p className="text-xs font-bold text-indigo-200 uppercase tracking-wider flex items-center gap-1">
-                                                {hasActiveDelivery && <Lock className="w-3 h-3 text-amber-300 fill-amber-300/30" />}
-                                                <span>Driver Online Status</span>
-                                            </p>
-                                            <p className={`text-sm font-bold ${isTracking ? 'text-emerald-400' : 'text-slate-300'}`}>
-                                                {isTracking ? 'LIVE & ONLINE' : 'OFFLINE'}
-                                                {hasActiveDelivery && <span className="text-[10px] text-amber-300 font-extrabold ml-1 uppercase">(LOCKED ACTIVE)</span>}
-                                            </p>
+                            {/* Driver Online / Tracking Status Card (Single Consolidated Control) at top */}
+                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5 mb-4 sm:mb-6 relative z-10 space-y-4">
+                                <div className="p-4 sm:p-5 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between gap-4">
+                                    <div className="space-y-0.5">
+                                        <div className="flex items-center gap-2">
+                                            <p className="font-bold text-slate-900 text-sm md:text-base">Driver Online Status</p>
+                                            <span className={`px-2 py-0.5 text-[10px] font-black rounded-full uppercase border ${isTracking ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                                                {isTracking ? 'Online & Available' : 'Offline'}
+                                            </span>
                                         </div>
-                                        <button 
-                                            onClick={handleToggleOnline}
-                                            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${isTracking ? 'bg-emerald-500' : 'bg-white/20'} ${hasActiveDelivery ? 'ring-2 ring-amber-400/50' : ''}`}
-                                            title={hasActiveDelivery ? 'Location tracking is locked ON during active shipment delivery' : 'Toggle Online/Offline status'}
-                                        >
-                                            <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${isTracking ? 'translate-x-5' : 'translate-x-0'}`} />
-                                        </button>
+                                        <p className="text-xs text-slate-500">Toggle whether you are available to receive and accept load assignments.</p>
+                                    </div>
+                                    <button 
+                                        onClick={handleToggleOnline}
+                                        className={`w-14 h-8 flex items-center rounded-full p-1 transition-all duration-300 cursor-pointer flex-shrink-0 ${isTracking ? 'bg-emerald-500 justify-end' : 'bg-slate-300 justify-start'}`}
+                                    >
+                                        <div className="w-6 h-6 rounded-full bg-white shadow-md"></div>
+                                    </button>
+                                </div>
+
+                                {/* Active Assigned Vehicle Badge / Banner on Main Screen */}
+                                <div className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                                    assignedVehicle?.vehicleNumber 
+                                        ? 'bg-gradient-to-r from-indigo-50/70 via-blue-50/40 to-slate-50 border-indigo-100/80' 
+                                        : 'bg-amber-50/40 border-amber-200/60'
+                                }`}>
+                                    <div className="flex items-center gap-3.5">
+                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                                            assignedVehicle?.vehicleNumber 
+                                                ? 'bg-indigo-600 text-white shadow-sm' 
+                                                : 'bg-amber-100 text-amber-600'
+                                        }`}>
+                                            <Truck className="h-5 w-5" />
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Assigned Vehicle</p>
+                                                <span className={`px-2 py-0.5 rounded-full text-[10px] uppercase font-black border ${
+                                                    assignedVehicle?.vehicleNumber 
+                                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                                                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                                                }`}>
+                                                    {assignedVehicle?.vehicleNumber ? 'Vehicle Linked' : 'Awaiting Assignment'}
+                                                </span>
+                                            </div>
+                                            {assignedVehicle?.vehicleNumber ? (
+                                                <p className="text-sm md:text-base font-extrabold text-slate-900 mt-0.5">
+                                                    {assignedVehicle.vehicleName ? `${assignedVehicle.vehicleName} ` : ''}
+                                                    <span className="font-mono font-black text-indigo-700 tracking-wide uppercase bg-indigo-100/80 px-2 py-0.5 rounded-md text-xs sm:text-sm">
+                                                        {assignedVehicle.vehicleNumber}
+                                                    </span>
+                                                    {assignedVehicle.capacityTons ? (
+                                                        <span className="text-xs font-semibold text-slate-500 ml-2 font-sans">
+                                                            ({assignedVehicle.capacityTons} Tons)
+                                                        </span>
+                                                    ) : null}
+                                                </p>
+                                            ) : (
+                                                <p className="text-xs font-semibold text-slate-600 mt-0.5 italic">
+                                                    Currently no vehicle is assigned. Waiting for transporter to assign a vehicle.
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                    {assignedVehicle?.vehicleNumber && (
+                                        <div className="text-left sm:text-right text-xs text-slate-500 pl-13 sm:pl-0">
+                                            <span className="bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/80 font-bold text-slate-700">
+                                                Ready for Dispatch
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Key Summary Stats Grid - 2 per row on mobile, full width at top */}
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-5 mb-6 md:mb-8">
+                                <div className="bg-white p-4 md:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                                    <div className="flex items-start justify-between">
+                                        <p className="text-xs md:text-sm font-bold text-slate-500">Current Balance</p>
+                                        <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
+                                            <Wallet className="h-4 w-4 md:h-5 md:w-5" />
+                                        </div>
+                                    </div>
+                                    <h3 className="text-lg md:text-2xl font-black text-slate-900 mt-2">{toCurrency(wallet?.currentBalance)}</h3>
+                                </div>
+                                <div className="bg-white p-4 md:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                                    <div className="flex items-start justify-between">
+                                        <p className="text-xs md:text-sm font-bold text-slate-500">Today's Earnings</p>
+                                        <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                                            <DollarSign className="h-4 w-4 md:h-5 md:w-5" />
+                                        </div>
+                                    </div>
+                                    <h3 className="text-lg md:text-2xl font-black text-slate-900 mt-2">{toCurrency(wallet?.totalEarnings)}</h3>
+                                </div>
+                                <div className="bg-white p-4 md:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                                    <div className="flex items-start justify-between">
+                                        <p className="text-xs md:text-sm font-bold text-slate-500">Today's Distance</p>
+                                        <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                                            <Navigation className="h-4 w-4 md:h-5 md:w-5" />
+                                        </div>
+                                    </div>
+                                    <div className="mt-2">
+                                        <h3 className="text-lg md:text-2xl font-black text-slate-900">{todaysDistanceTraveledKm} km</h3>
+                                        <p className="text-[11px] text-slate-400 font-semibold truncate">
+                                            {currentRide ? `Active: ${activeRideProgressKm} km` : 'Fleet Ready'}
+                                        </p>
                                     </div>
                                 </div>
-                             </div>
+                                <div className="bg-white p-4 md:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                                    <div className="flex items-start justify-between">
+                                        <p className="text-xs md:text-sm font-bold text-slate-500">Pending Withdrawals</p>
+                                        <div className="p-2 bg-amber-50 text-amber-600 rounded-xl">
+                                            <Clock className="h-4 w-4 md:h-5 md:w-5" />
+                                        </div>
+                                    </div>
+                                    <div className="mt-2">
+                                        <h3 className="text-lg md:text-2xl font-black text-slate-900">{wallet?.pendingWithdrawalCount || 0}</h3>
+                                        <p className="text-[11px] text-slate-400 font-medium">{toCurrency(wallet?.pendingWithdrawalAmount)}</p>
+                                    </div>
+                                </div>
+                            </div>
 
-                             {/* Wallet Summary Stats Grid */}
-                             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 md:gap-4 mb-8 relative z-10">
-                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Current Balance</p>
-                                     <h3 className="text-xl font-black text-slate-900">{toCurrency(wallet?.currentBalance)}</h3>
-                                     <Wallet className="h-5 w-5 text-emerald-600 mt-2" />
-                                 </div>
-                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Today's Earnings</p>
-                                     <h3 className="text-xl font-black text-slate-900">{toCurrency(wallet?.totalEarnings)}</h3>
-                                     <DollarSign className="h-5 w-5 text-blue-600 mt-2" />
-                                 </div>
-                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm border-t-4 border-t-purple-600">
-                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Today's KM Driven</p>
-                                     <h3 className="text-xl font-black text-purple-700">{(driverSummaryCard?.todaysTotalKm || 0).toFixed(1)} km</h3>
-                                     <Route className="h-5 w-5 text-purple-600 mt-2" />
-                                 </div>
-                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Ride Payments</p>
-                                     <h3 className="text-xl font-black text-slate-900">{toCurrency(wallet?.totalRidePayments)}</h3>
-                                     <Truck className="h-5 w-5 text-indigo-600 mt-2" />
-                                 </div>
-                                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                                     <p className="text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Pending Payouts</p>
-                                     <h3 className="text-xl font-black text-slate-900">{wallet?.pendingWithdrawalCount || 0}</h3>
-                                     <p className="text-[10px] text-slate-500 mt-0.5">{toCurrency(wallet?.pendingWithdrawalAmount)}</p>
-                                     <Clock className="h-5 w-5 text-amber-600 mt-1" />
-                                 </div>
-                             </div>
+                            {/* Pending Customer Ride Requests - Highlighted at top */}
+                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 mb-6 md:mb-8">
+                                <div className="flex items-center justify-between mb-4">
+                                    <h3 className="text-base md:text-lg font-bold text-slate-900 flex items-center gap-2">
+                                        <Truck className="h-5 w-5 text-indigo-600" />
+                                        Pending Customer Ride Requests
+                                    </h3>
+                                    {activeTransporter?.isIndependent && !assignedVehicle?.vehicleNumber ? (
+                                        <span className="text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200 px-2.5 py-0.5 rounded-full">
+                                            Vehicle Required
+                                        </span>
+                                    ) : rideRequests.length > 0 && (
+                                        <span className="text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-0.5 rounded-full">
+                                            {rideRequests.length} Waiting
+                                        </span>
+                                    )}
+                                </div>
+
+                                {activeTransporter?.isIndependent && !assignedVehicle?.vehicleNumber ? (
+                                    <div className="rounded-2xl border border-rose-200 bg-rose-50/70 p-6 text-center space-y-3">
+                                        <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto shadow-sm">
+                                            <AlertTriangle className="h-6 w-6 stroke-[2.5]" />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-extrabold text-slate-900 text-base">Vehicle Registration Required</h4>
+                                            <p className="text-xs text-slate-600 max-w-md mx-auto mt-1">
+                                                As an independent owner-driver, you must add and register your vehicle to receive and accept customer ride requests.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={() => navigate('/profile')}
+                                            className="inline-flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer"
+                                        >
+                                            <Truck className="h-4 w-4" /> Add Vehicle in Settings
+                                        </button>
+                                    </div>
+                                ) : rideRequests.length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500 text-center">
+                                        No pending ride requests from customers right now.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {rideRequests.map((ride) => (
+                                            <div key={ride.id} className="rounded-2xl border border-slate-200 p-4 sm:p-5 hover:border-indigo-200 transition-colors">
+                                                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                                                    <div className="space-y-2">
+                                                        <div className="flex items-center gap-3 flex-wrap">
+                                                            <div className="w-8 h-8 rounded-full overflow-hidden bg-indigo-100 border border-indigo-200 flex items-center justify-center font-bold text-indigo-700 text-xs uppercase shrink-0">
+                                                                {ride.customerProfilePic ? (
+                                                                    <img 
+                                                                        src={
+                                                                            ride.customerProfilePic.startsWith('http') || ride.customerProfilePic.startsWith('data:')
+                                                                                ? ride.customerProfilePic
+                                                                                : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${ride.customerProfilePic.startsWith('/') ? '' : '/'}${ride.customerProfilePic}`
+                                                                        }
+                                                                        alt={ride.customerName || 'Customer'}
+                                                                        className="w-full h-full object-cover"
+                                                                        onError={(e) => {
+                                                                            (e.target as HTMLElement).style.display = 'none';
+                                                                        }}
+                                                                    />
+                                                                ) : (
+                                                                    <span>{ride.customerName?.substring(0, 2) || 'CU'}</span>
+                                                                )}
+                                                            </div>
+                                                            <p className="text-base font-bold text-slate-900">{ride.customerName ? `${ride.customerName} (Ride #${ride.id})` : `Ride #${ride.id}`}</p>
+                                                            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 border border-amber-200">
+                                                                Pending acceptance
+                                                            </span>
+                                                            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-extrabold text-emerald-700 border border-emerald-200">
+                                                                Fare: {toCurrency(ride.estimatedFare)}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-sm text-slate-600 space-y-1">
+                                                            <p><span className="font-semibold text-slate-800">Pickup:</span> {ride.pickupAddress || 'N/A'}</p>
+                                                            <p><span className="font-semibold text-slate-800">Drop:</span> {ride.dropAddress || 'N/A'}</p>
+                                                            {currentPosition && ride.pickupLat && ride.pickupLng ? (
+                                                                <p><span className="font-semibold text-indigo-600">Distance to Pickup:</span> {calculateDistance(currentPosition.lat, currentPosition.lng, ride.pickupLat, ride.pickupLng)} km</p>
+                                                            ) : null}
+                                                            {ride.pickupLat && ride.pickupLng && ride.dropLat && ride.dropLng ? (
+                                                                <>
+                                                                    <p><span className="font-semibold text-indigo-600">Distance to Destination:</span> {calculateDistance(ride.pickupLat, ride.pickupLng, ride.dropLat, ride.dropLng)} km</p>
+                                                                    <p><span className="font-semibold text-indigo-600">Estimated Duration:</span> {getEstimatedTime(calculateDistance(ride.pickupLat, ride.pickupLng, ride.dropLat, ride.dropLng))}</p>
+                                                                </>
+                                                            ) : null}
+                                                            {(() => {
+                                                                const rawGoods = ride.goodsType || 'N/A';
+                                                                const isTons = rawGoods.includes('[Unit: Tons]');
+                                                                const cleanGoods = rawGoods.replace(/\s*\[Unit:\s*Tons\]/gi, '').trim() || 'N/A';
+                                                                const unit = isTons ? 'Tons' : 'kg';
+                                                                return (
+                                                                    <>
+                                                                        <p><span className="font-semibold text-slate-800">Goods:</span> {cleanGoods}</p>
+                                                                        {ride.goodsWeight && ride.goodsWeight > 0 ? (
+                                                                            <p><span className="font-semibold text-slate-800">Weight:</span> {ride.goodsWeight} {unit}</p>
+                                                                        ) : null}
+                                                                    </>
+                                                                );
+                                                            })()}
+                                                            {(ride.ctVehicleType || ride.ctBodyType || ride.ctTyreType) ? (
+                                                                <div className="flex flex-wrap gap-2 pt-1 text-xs">
+                                                                    {ride.ctVehicleType ? (
+                                                                        <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded-md font-semibold">
+                                                                            🚚 {commonTypesMap[ride.ctVehicleType] || `Type #${ride.ctVehicleType}`}
+                                                                        </span>
+                                                                    ) : null}
+                                                                    {ride.ctBodyType ? (
+                                                                        <span className="bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-md font-semibold">
+                                                                            📦 {commonTypesMap[ride.ctBodyType] || `Body #${ride.ctBodyType}`}
+                                                                        </span>
+                                                                    ) : null}
+                                                                    {ride.ctTyreType ? (
+                                                                        <span className="bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5 rounded-md font-semibold">
+                                                                            🔘 {commonTypesMap[ride.ctTyreType] || `Tyre #${ride.ctTyreType}`}
+                                                                        </span>
+                                                                    ) : null}
+                                                                </div>
+                                                            ) : null}
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex flex-col gap-2.5 sm:flex-row">
+                                                        <button
+                                                            onClick={() => acceptRide(ride)}
+                                                            className="rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-6 py-2.5 text-sm transition-colors cursor-pointer"
+                                                        >
+                                                            Accept Ride
+                                                        </button>
+                                                        <button
+                                                            onClick={() => rejectRide(ride)}
+                                                            className="rounded-xl border border-red-300 text-red-700 hover:bg-red-50 font-bold px-6 py-2.5 text-sm transition-colors cursor-pointer"
+                                                        >
+                                                            Reject Ride
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setChatBookingId(ride.id)}
+                                                            className="rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 font-bold px-5 py-2.5 text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                                                        >
+                                                            <MessageCircle className="h-4 w-4 text-emerald-600" />
+                                                            Chat
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
 
                             {/* Transporter Relationship Control Panel */}
-                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8 relative z-10 space-y-4">
+                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 mb-6 md:mb-8 relative z-10 space-y-4">
                                 <div>
-                                    <h3 className="text-lg font-bold text-slate-900">Transporter Fleet Connection</h3>
+                                    <h3 className="text-base md:text-lg font-bold text-slate-900">Transporter Fleet Connection</h3>
                                     <p className="text-slate-500 text-xs mt-0.5">Manage your active transporter link, outbound join requests, and inbound invitations.</p>
                                 </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 pt-2">
                                     {/* Active Transporter Card */}
                                     <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col justify-between">
                                         <div>
@@ -959,13 +1534,13 @@ const DriverDashboard = () => {
                                                             const driverUserId = user?.userId || user?.id || user?.UserId || '';
                                                             setDirectChatRoomName(`TransporterDriver_${transporterUserId}_${driverUserId}`);
                                                         }}
-                                                        className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl px-4 py-2 text-xs font-bold transition-all cursor-pointer"
+                                                        className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl px-3 sm:px-4 py-2 text-xs font-bold transition-all cursor-pointer"
                                                     >
                                                         💬 Chat
                                                     </button>
                                                     <button
                                                         onClick={handleSendLeaveRequest}
-                                                        className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl px-4 py-2 text-xs font-bold transition-all cursor-pointer"
+                                                        className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl px-3 sm:px-4 py-2 text-xs font-bold transition-all cursor-pointer"
                                                     >
                                                         Leave Transporter
                                                     </button>
@@ -1022,11 +1597,11 @@ const DriverDashboard = () => {
                                 </div>
 
                                 {/* Inbound Invitations from Transporters */}
-                                {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|') && !req.message.startsWith('ASSIGN_SHIPMENT|')).length > 0 && (
+                                {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|')).length > 0 && (
                                     <div className="border-t border-slate-100 pt-4 space-y-3">
                                         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Inbound Invitations</p>
                                         <div className="space-y-2">
-                                            {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|') && !req.message.startsWith('ASSIGN_SHIPMENT|')).map(req => {
+                                            {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|')).map(req => {
                                                 const parts = req.message.split('|');
                                                 const companyName = parts[3] || 'Transporter';
                                                 const email = parts[2] || '';
@@ -1059,221 +1634,148 @@ const DriverDashboard = () => {
                                 )}
                             </div>
 
-                            {(loadingWallet || loadingRides) && <p className="text-sm text-slate-500 mb-6">Loading driver data...</p>}
-
-                             {assignedVehicleInfo && (
-                                 <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl border border-slate-800 mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in duration-300">
-                                     <div className="flex items-center gap-4">
-                                         <div className="w-14 h-14 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-3xl shrink-0 shadow-inner">
-                                             🚚
-                                         </div>
-                                         <div className="space-y-1">
-                                             <div className="flex items-center gap-2">
-                                                 <span className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/20 text-indigo-300 px-3 py-0.5 rounded-full border border-indigo-500/40">
-                                                     Assigned Fleet Vehicle
-                                                 </span>
-                                             </div>
-                                             <h3 className="text-xl font-black text-white">
-                                                 {assignedVehicleInfo.vehicleName} <span className="text-indigo-400 font-mono">({assignedVehicleInfo.registrationNumber})</span>
-                                             </h3>
-                                             <p className="text-xs text-slate-300 font-medium">
-                                                 Type: <span className="font-bold text-white">{assignedVehicleInfo.vehicleType || 'Truck'}</span>
-                                                 {assignedVehicleInfo.bodyType ? ` • Body: ${assignedVehicleInfo.bodyType}` : ''}
-                                                 {assignedVehicleInfo.tyreType ? ` • Tyres: ${assignedVehicleInfo.tyreType}` : ''}
-                                                 {assignedVehicleInfo.capacity ? ` • Capacity: ${assignedVehicleInfo.capacity} Tons` : ''}
-                                             </p>
-                                         </div>
-                                     </div>
-                                     <div className="flex items-center gap-2 shrink-0">
-                                         <span className="px-3.5 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-xl text-xs font-extrabold flex items-center gap-1.5">
-                                             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                                             Active Vehicle Ready
-                                         </span>
-                                     </div>
-                                 </div>
-                             )}
-
-                                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8">
-                                 <h3 className="text-lg font-bold text-slate-900 mb-4">Pending Ride Requests</h3>
-                                {rideRequests.length === 0 ? (
-                                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                                        No pending ride requests for you right now.
-                                    </div>
-                                ) : (
-                                    <div className="space-y-4">
-                                        {rideRequests.map((ride) => (
-                                            <div key={ride.id} className="rounded-2xl border border-slate-200 p-5">
-                                                 {/* Transporter Assignment vs Direct Customer Request Badge */}
-                                                 {ride.isTransporterAssigned ? (
-                                                     <div className="w-full bg-purple-50 border border-purple-200/80 rounded-xl p-3 flex items-center justify-between text-xs text-purple-950 font-bold mb-3 shadow-sm">
-                                                         <div className="flex items-center gap-2">
-                                                             <span className="bg-purple-600 text-white px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider shadow-sm">
-                                                                 🏢 Assigned by Transporter
-                                                             </span>
-                                                             <span>Request by Customer ({ride.customerName || 'Customer'}) and assigned by your Transporter {ride.transporterName ? `(${ride.transporterName})` : ''}</span>
-                                                         </div>
-                                                     </div>
-                                                 ) : (
-                                                     <div className="w-full bg-sky-50 border border-sky-200/80 rounded-xl p-2.5 flex items-center gap-2 text-xs text-sky-950 font-semibold mb-3">
-                                                         <span className="bg-sky-600 text-white px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider shadow-sm">
-                                                             👤 Direct Customer Request
-                                                         </span>
-                                                         <span>Requested directly by Customer: {ride.customerName || 'Customer'}</span>
-                                                     </div>
-                                                 )}
-
-                                                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                                                    <div className="space-y-2">
-                                                        <div className="flex items-center gap-3 flex-wrap">
-                                                            <p className="text-base font-bold text-slate-900">Ride #{ride.id}</p>
-                                                            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 border border-amber-200">
-                                                                Pending acceptance
-                                                            </span>
-                                                            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-extrabold text-emerald-700 border border-emerald-200">
-                                                                Fare: {toCurrency(ride.estimatedFare)}
-                                                            </span>
-                                                        </div>
-                                                        <div className="text-sm text-slate-600 space-y-1">
-                                                            <p><span className="font-semibold text-slate-800">Pickup:</span> {ride.pickupAddress || 'N/A'}</p>
-                                                            <p><span className="font-semibold text-slate-800">Drop:</span> {ride.dropAddress || 'N/A'}</p>
-                                                            {currentPosition && ride.pickupLat && ride.pickupLng ? (
-                                                                <p><span className="font-semibold text-indigo-600">Distance to Pickup:</span> {calculateDistance(currentPosition.lat, currentPosition.lng, ride.pickupLat, ride.pickupLng)} km</p>
-                                                            ) : null}
-                                                            {ride.pickupLat && ride.pickupLng && ride.dropLat && ride.dropLng ? (
-                                                                <>
-                                                                    <p><span className="font-semibold text-indigo-600">Distance to Destination:</span> {calculateDistance(ride.pickupLat, ride.pickupLng, ride.dropLat, ride.dropLng)} km</p>
-                                                                    <p><span className="font-semibold text-indigo-600">Estimated Duration:</span> {getEstimatedTime(calculateDistance(ride.pickupLat, ride.pickupLng, ride.dropLat, ride.dropLng))}</p>
-                                                                </>
-                                                            ) : null}
-                                                            <p><span className="font-semibold text-slate-800">Goods:</span> {ride.goodsType || 'N/A'}</p>
-                                                            {ride.goodsWeight && ride.goodsWeight > 0 ? (
-                                                                <p><span className="font-semibold text-slate-800">Weight:</span> {ride.goodsWeight} kg</p>
-                                                            ) : null}
-                                                            <p><span className="font-semibold text-slate-800">Estimated Fare:</span> {toCurrency(ride.estimatedFare)}</p>
-                                                            {(ride.vehicleTypeName || ride.bodyTypeName || ride.tyreTypeName) && (
-                                                                <div className="mt-2.5 p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-1">
-                                                                    <p className="font-extrabold text-slate-700 uppercase tracking-wider text-[10px]">📋 Customer Vehicle Requirements:</p>
-                                                                    {ride.vehicleTypeName && <p><span className="font-medium text-slate-600">Vehicle Type:</span> <span className="font-bold text-slate-900">{ride.vehicleTypeName}</span></p>}
-                                                                    {ride.bodyTypeName && <p><span className="font-medium text-slate-600">Body Type:</span> <span className="font-bold text-slate-900">{ride.bodyTypeName}</span></p>}
-                                                                    {ride.tyreTypeName && <p><span className="font-medium text-slate-600">Tyre Type:</span> <span className="font-bold text-slate-900">{ride.tyreTypeName}</span></p>}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex flex-col gap-3 sm:flex-row">
-                                                        <button
-                                                            onClick={() => acceptRide(ride)}
-                                                            className="rounded-xl bg-emerald-600 text-white font-semibold px-6 py-3"
-                                                        >
-                                                            Accept Ride
-                                                        </button>
-                                                        <button
-                                                            onClick={() => rejectRide(ride)}
-                                                            className="rounded-xl border border-red-300 text-red-700 font-semibold px-6 py-3"
-                                                        >
-                                                            Reject Ride
-                                                        </button>
-                                                        <button
-                                                            onClick={() => setChatBookingId(ride.id)}
-                                                            className="rounded-xl border border-slate-300 bg-white text-slate-700 font-semibold px-5 py-3 flex items-center gap-2 hover:bg-slate-50 transition-colors"
-                                                        >
-                                                            <MessageCircle className="h-4 w-4 text-emerald-600" />
-                                                            Chat
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="mb-8">
+<div className="grid grid-cols-1 gap-8 mb-8">
                                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
                                     <h3 className="text-lg font-bold text-slate-900 mb-4">Current Ride Status</h3>
                                     {currentRide ? (
                                         <div className="space-y-4">
                                             <div className="rounded-2xl border border-primary-100 bg-primary-50 p-4">
-                                                <div className="flex items-center justify-between gap-3">
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                                     <div>
                                                         <p className="text-sm font-bold text-slate-900">Ride #{currentRide.id}</p>
-                                                        <p className="text-xs text-slate-500 mt-1">Current status: {currentRide.rideStatus}</p>
+                                                        <p className="text-xs text-slate-500 mt-0.5">Current status: {currentRide.rideStatus}</p>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-10 h-10 rounded-full overflow-hidden bg-primary-200 border-2 border-white shadow-xs flex items-center justify-center font-black text-primary-800 text-xs uppercase shrink-0">
+                                                            {currentRide.customerProfilePic ? (
+                                                                <img 
+                                                                    src={
+                                                                        currentRide.customerProfilePic.startsWith('http') || currentRide.customerProfilePic.startsWith('data:')
+                                                                            ? currentRide.customerProfilePic
+                                                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${currentRide.customerProfilePic.startsWith('/') ? '' : '/'}${currentRide.customerProfilePic}`
+                                                                    }
+                                                                    alt={currentRide.customerName || 'Customer'}
+                                                                    className="w-full h-full object-cover"
+                                                                    onError={(e) => {
+                                                                        (e.target as HTMLElement).style.display = 'none';
+                                                                    }}
+                                                                />
+                                                            ) : (
+                                                                <span>{currentRide.customerName?.substring(0, 2) || 'CU'}</span>
+                                                            )}
+                                                        </div>
                                                         <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-primary-700 border border-primary-200">
                                                             {currentRide.customerName || 'Assigned Customer'}
                                                         </span>
                                                         <button
                                                             onClick={() => setChatBookingId(currentRide.id)}
-                                                            className="flex items-center gap-1.5 rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-bold hover:bg-emerald-500 transition-colors"
+                                                            className="flex items-center gap-1.5 rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-bold hover:bg-emerald-500 transition-colors cursor-pointer"
                                                         >
                                                             <MessageCircle className="h-3 w-3" /> Chat
                                                         </button>
                                                     </div>
                                                 </div>
-                                                <div className="mt-4 space-y-2 text-sm text-slate-600">
-                                                    <div className="flex items-start gap-2">
-                                                        <MapPin className="h-4 w-4 text-emerald-600 mt-0.5" />
-                                                        <span>{currentRide.pickupAddress || 'Pickup location not available'}</span>
+                                                <div className="mt-4 space-y-2.5 text-sm text-slate-600">
+                                                    <div className="flex items-start justify-between gap-2 p-2.5 rounded-xl bg-white border border-emerald-100 shadow-2xs">
+                                                        <div className="flex items-start gap-2 min-w-0">
+                                                            <MapPin className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                                                            <div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="font-extrabold text-emerald-800 block text-xs uppercase tracking-wider">Step 1: Pickup Location</span>
+                                                                    {currentRide.rideStatus === 'driver_arriving' || currentRide.rideStatus === 'ride_started' || currentRide.rideStatus === 'ride_completed' ? (
+                                                                        <span className="px-1.5 py-0.2 text-[9px] font-black bg-emerald-100 text-emerald-800 rounded uppercase">Reached / Loaded</span>
+                                                                    ) : null}
+                                                                </div>
+                                                                <span className="font-semibold text-slate-800 text-xs">{currentRide.pickupAddress || 'Pickup location not available'}</span>
+                                                                {currentRide.pickupLat && currentRide.pickupLng ? (
+                                                                    <span className="text-[11px] text-indigo-600 font-bold block mt-0.5">
+                                                                        {(() => {
+                                                                            const lat = currentPosition?.lat ?? currentRide.pickupLat;
+                                                                            const lng = currentPosition?.lng ?? currentRide.pickupLng;
+                                                                            const dist = calculateDistance(lat, lng, currentRide.pickupLat, currentRide.pickupLng);
+                                                                            const time = getEstimatedTime(dist);
+                                                                            if (dist <= 0.05) return '📍 Arrived at Customer Pickup';
+                                                                            return `🚗 Remaining to Pickup: ${dist} km • ${time} ETA`;
+                                                                        })()}
+                                                                    </span>
+                                                                ) : null}
+                                                            </div>
+                                                        </div>
+                                                        <button 
+                                                            onClick={() => {
+                                                                const dest = currentRide.pickupAddress || `${currentRide.pickupLat},${currentRide.pickupLng}`;
+                                                                window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dest)}`, '_blank');
+                                                            }}
+                                                            className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                                                            title="Navigate from your current location to Customer Pickup"
+                                                        >
+                                                            <Navigation className="h-3 w-3" /> Navigate
+                                                        </button>
                                                     </div>
-                                                    <div className="flex items-start gap-2">
-                                                         <Route className="h-4 w-4 text-rose-600 mt-0.5" />
-                                                         <span>{currentRide.dropAddress || 'Drop location not available'}</span>
-                                                     </div>
-                                                 </div>
 
-                                             {/* Live Driver Navigation Map Card */}
-                                             <div className="rounded-2xl overflow-hidden border border-slate-200 shadow-sm mt-4">
-                                                 <div className="bg-slate-900 text-white p-3 flex items-center justify-between">
-                                                     <div className="flex items-center gap-2">
-                                                         <span className="text-lg">{currentRide.rideStatus === 'ride_started' ? '🚩' : '📍'}</span>
-                                                         <div>
-                                                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                                                 {currentRide.rideStatus === 'ride_started' ? 'Navigation to Drop Destination' : 'Navigation to Customer Pickup'}
-                                                             </p>
-                                                             {driverMetrics && (
-                                                                 <p className="text-xs font-extrabold text-emerald-400">
-                                                                     {driverMetrics.distanceKm} km • ~{driverMetrics.etaMins} mins
-                                                                 </p>
-                                                             )}
-                                                         </div>
-                                                     </div>
-                                                     <button 
-                                                         onClick={() => {
-                                                             const targetLat = currentRide.rideStatus === 'ride_started' ? (currentRide.dropLat || 19.076) : (currentRide.pickupLat || 28.6139);
-                                                             const targetLng = currentRide.rideStatus === 'ride_started' ? (currentRide.dropLng || 72.8777) : (currentRide.pickupLng || 77.209);
-                                                             window.open(`https://www.google.com/maps/dir/?api=1&destination=${targetLat},${targetLng}`, '_blank');
-                                                         }}
-                                                         className="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 text-xs font-bold transition-all shadow cursor-pointer flex items-center gap-1"
-                                                     >
-                                                         🗺️ Google Maps
-                                                     </button>
-                                                 </div>
-                                                 <TrackingMap 
-                                                     bookingId={currentRide.id}
-                                                     pickupLat={currentRide.pickupLat || 28.6139}
-                                                     pickupLng={currentRide.pickupLng || 77.2090}
-                                                     dropLat={currentRide.dropLat || 19.0760}
-                                                     dropLng={currentRide.dropLng || 72.8777}
-                                                     rideStatus={currentRide.rideStatus}
-                                                     onMetricsUpdate={(m: any) => setDriverMetrics(m)}
-                                                 />
-                                             </div>
+                                                    <div className="flex items-start justify-between gap-2 p-2.5 rounded-xl bg-white border border-rose-100 shadow-2xs">
+                                                        <div className="flex items-start gap-2 min-w-0">
+                                                            <Route className="h-4 w-4 text-rose-600 mt-0.5 shrink-0" />
+                                                            <div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="font-extrabold text-rose-800 block text-xs uppercase tracking-wider">Step 2: Destination Drop</span>
+                                                                    {currentRide.rideStatus === 'ride_started' ? (
+                                                                        <span className="px-1.5 py-0.2 text-[9px] font-black bg-indigo-100 text-indigo-800 rounded uppercase animate-pulse">In Transit</span>
+                                                                    ) : null}
+                                                                </div>
+                                                                <span className="font-semibold text-slate-800 text-xs">{currentRide.dropAddress || 'Drop location not available'}</span>
+                                                                {currentRide.dropLat && currentRide.dropLng ? (
+                                                                    <span className="text-[11px] text-purple-600 font-bold block mt-0.5">
+                                                                        {(() => {
+                                                                            const isStarted = currentRide.rideStatus === 'ride_started';
+                                                                            const startLat = (isStarted && currentPosition) ? currentPosition.lat : (currentRide.pickupLat ?? currentRide.dropLat);
+                                                                            const startLng = (isStarted && currentPosition) ? currentPosition.lng : (currentRide.pickupLng ?? currentRide.dropLng);
+                                                                            const dist = calculateDistance(startLat, startLng, currentRide.dropLat, currentRide.dropLng);
+                                                                            const time = getEstimatedTime(dist);
+                                                                            if (dist <= 0.05 && isStarted) return '🏁 Arrived at Destination Drop';
+                                                                            return `📦 ${isStarted ? 'Remaining to Destination:' : 'Total Route Distance:'} ${dist} km • ${time} ETA`;
+                                                                        })()}
+                                                                    </span>
+                                                                ) : null}
+                                                            </div>
+                                                        </div>
+                                                        <button 
+                                                            onClick={() => {
+                                                                const dest = currentRide.dropAddress || `${currentRide.dropLat},${currentRide.dropLng}`;
+                                                                window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dest)}`, '_blank');
+                                                            }}
+                                                            className="text-xs bg-rose-600 hover:bg-rose-700 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                                                            title="Navigate to Destination Drop"
+                                                        >
+                                                            <Navigation className="h-3 w-3" /> Navigate
+                                                        </button>
+                                                    </div>
+                                                </div>
                                             </div>
 
                                             {/* Navigation Quick Actions */}
-                                            <div className="flex gap-3 mt-4">
+                                            <div className="flex flex-wrap sm:flex-nowrap gap-2.5 mt-4">
                                                 <button
                                                     onClick={() => window.open('tel:+919999988888')}
-                                                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-3 transition-colors text-sm cursor-pointer"
+                                                    className="flex-1 min-w-[70px] flex items-center justify-center gap-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2.5 transition-colors text-xs sm:text-sm cursor-pointer"
                                                 >
                                                     <Phone className="h-4 w-4" /> Call
                                                 </button>
                                                 <button
                                                     onClick={() => setChatBookingId(currentRide.id)}
-                                                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold py-3 transition-colors text-sm cursor-pointer"
+                                                    className="flex-1 min-w-[70px] flex items-center justify-center gap-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold py-2.5 transition-colors text-xs sm:text-sm cursor-pointer"
                                                 >
                                                     <MessageCircle className="h-4 w-4" /> Chat
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setPaymentModalRide(currentRide);
+                                                        setCustomPaymentAmount(String(currentRide.finalFare || currentRide.estimatedFare || ''));
+                                                        setPaymentMode('QR');
+                                                    }}
+                                                    className="flex-1 min-w-[110px] flex items-center justify-center gap-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold py-2.5 transition-colors text-xs sm:text-sm cursor-pointer shadow-sm"
+                                                >
+                                                    <QrCode className="h-4 w-4" /> Pay / Cash
                                                 </button>
                                                 <button
                                                     onClick={async () => {
@@ -1287,11 +1789,24 @@ const DriverDashboard = () => {
                                                             }
                                                         }
                                                     }}
-                                                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold py-3 transition-colors text-sm cursor-pointer"
+                                                    className="flex-1 min-w-[70px] flex items-center justify-center gap-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold py-2.5 transition-colors text-xs sm:text-sm cursor-pointer"
                                                 >
                                                     <AlertTriangle className="h-4 w-4 fill-white" /> SOS
                                                 </button>
                                             </div>
+
+                                            {/* Live Dynamic Routing Map */}
+                                            <DriverRouteMap
+                                                driverLat={currentPosition?.lat || currentRide.pickupLat}
+                                                driverLng={currentPosition?.lng || currentRide.pickupLng}
+                                                pickupLat={currentRide.pickupLat}
+                                                pickupLng={currentRide.pickupLng}
+                                                dropLat={currentRide.dropLat}
+                                                dropLng={currentRide.dropLng}
+                                                rideStatus={currentRide.rideStatus || 'driver_assigned'}
+                                                pickupAddress={currentRide.pickupAddress}
+                                                dropAddress={currentRide.dropAddress}
+                                            />
 
                                             {/* Tactile Stepper display */}
                                             <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-3">
@@ -1305,50 +1820,61 @@ const DriverDashboard = () => {
                                                     <span className="text-slate-300">➔</span>
                                                     <span className={`px-2 py-0.5 rounded-full ${currentRide.rideStatus === 'ride_completed' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500'}`}>Delivered</span>
                                                 </div>
+                                            </div>
 
-                                                {/* Action Control Button */}
-                                                {currentRide.rideStatus === 'driver_assigned' && (
+                                            {/* Action Control Button */}
+                                            {currentRide.rideStatus === 'driver_assigned' && (
+                                                <div className="flex flex-col sm:flex-row gap-3">
                                                     <button
                                                         onClick={() => advanceRideStatus(currentRide, 'driver_arriving')}
-                                                        className="w-full rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer mb-2"
+                                                        className="flex-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer"
                                                     >
                                                         📦 Goods Loaded successfully
                                                     </button>
-                                                )}
+                                                    <button
+                                                        onClick={async () => {
+                                                            if (!window.confirm(`Are you sure you want to cancel Ride #${currentRide.id}? The customer and your transporter will be notified.`)) {
+                                                                return;
+                                                            }
+                                                            await advanceRideStatus(currentRide, 'cancelled');
+                                                        }}
+                                                        className="px-6 py-3.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold text-sm transition-all active:scale-[0.99] cursor-pointer"
+                                                    >
+                                                        ✕ Cancel Ride
+                                                    </button>
+                                                </div>
+                                            )}
 
-                                                {currentRide.rideStatus === 'driver_arriving' && (
+                                            {currentRide.rideStatus === 'driver_arriving' && (
+                                                <div className="flex flex-col sm:flex-row gap-3">
                                                     <button
                                                         onClick={() => advanceRideStatus(currentRide, 'ride_started')}
-                                                        className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer mb-2"
+                                                        className="flex-1 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer"
                                                     >
                                                         🚚 Start Journey
                                                     </button>
-                                                )}
-
-                                                {/* Driver Payment Collection Button (Advance & Post-Ride) */}
-                                                {currentRide.rideStatus !== 'ride_completed' && (
-                                                    <button
-                                                        onClick={() => setShowPaymentCollectionModal(currentRide)}
-                                                        className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3.5 text-sm tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer mb-2 flex items-center justify-center gap-2"
-                                                    >
-                                                        💰 Collect Payment (Cash / UPI QR)
-                                                    </button>
-                                                )}
-
-                                                {(currentRide.rideStatus === 'driver_assigned' || currentRide.rideStatus === 'driver_arriving') && (
                                                     <button
                                                         onClick={async () => {
-                                                            if (window.confirm("Are you sure you want to cancel this ride?")) {
-                                                                await advanceRideStatus(currentRide, 'cancelled');
+                                                            if (!window.confirm(`Are you sure you want to cancel Ride #${currentRide.id}? The customer and your transporter will be notified.`)) {
+                                                                return;
                                                             }
+                                                            await advanceRideStatus(currentRide, 'cancelled');
                                                         }}
-                                                        className="w-full mt-2 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 font-extrabold py-3 text-sm tracking-wide transition-all cursor-pointer text-center flex items-center justify-center gap-1.5"
+                                                        className="px-6 py-3.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold text-sm transition-all active:scale-[0.99] cursor-pointer"
                                                     >
-                                                        🚫 Cancel Ride
+                                                        ✕ Cancel Ride
                                                     </button>
-                                                )}
-                                            </div>
+                                                </div>
+                                            )}
 
+                                            {currentRide.rideStatus === 'ride_started' && (
+                                                <button
+                                                    onClick={() => advanceRideStatus(currentRide, 'ride_completed')}
+                                                    className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3.5 text-base tracking-wide shadow-md transition-all active:scale-[0.99] cursor-pointer"
+                                                >
+                                                    🏁 Delivered (Mark Complete)
+                                                </button>
+                                            )}
                                             {currentRide.rideStatus !== 'driver_assigned' && 
                                              currentRide.rideStatus !== 'driver_arriving' && 
                                              currentRide.rideStatus !== 'ride_started' && (
@@ -1402,24 +1928,14 @@ const DriverDashboard = () => {
                                                                         </span>
                                                                     ) : (
                                                                         <button
-                                                                            onClick={async () => {
-                                                                                try {
-                                                                                    const fareAmount = ride.finalFare || ride.estimatedFare || 0;
-                                                                                    await apiClient.post('/DriverFinance/ridePayment', {
-                                                                                        rideId: ride.id,
-                                                                                        amount: fareAmount,
-                                                                                        paymentMode: 'Cash/Wallet',
-                                                                                        transactionReference: `DirectWalletRecord-${ride.id}`
-                                                                                    });
-                                                                                    alert(`Payment recorded successfully! Rs. ${(fareAmount * 0.9).toFixed(2)} has been credited to your wallet (after 10% fee deduction).`);
-                                                                                    await refreshRides();
-                                                                                } catch (err: any) {
-                                                                                    alert(err?.response?.data?.message || err?.response?.data?.Message || 'Payment recording failed.');
-                                                                                }
+                                                                            onClick={() => {
+                                                                                setPaymentModalRide(ride);
+                                                                                setCustomPaymentAmount(String(ride.finalFare || ride.estimatedFare || ''));
+                                                                                setPaymentMode('QR');
                                                                             }}
-                                                                            className="bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer shadow-md inline-flex items-center gap-1 animate-pulse"
+                                                                            className="bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer shadow-md inline-flex items-center gap-1.5"
                                                                         >
-                                                                            💵 Proceed to Payment
+                                                                            <QrCode className="h-3.5 w-3.5" /> Collect Payment
                                                                         </button>
                                                                     )}
                                                                 </div>
@@ -1455,6 +1971,132 @@ const DriverDashboard = () => {
                                     </div>
                                 )}
                             </div>
+                        </>
+                    )}
+                    
+                    {activeTab === 'rides' && (
+                        <div className="space-y-8 pb-20">
+                            <header className="flex justify-between items-end mb-10 h-24">
+                                <div className="text-white">
+                                    <p className="text-indigo-200 font-medium tracking-wide text-sm mb-1 uppercase">RIDES & REQUESTS</p>
+                                    <h1 className="text-3xl font-extrabold tracking-tight">Active Trips & Requests</h1>
+                                </div>
+                            </header>
+
+                            {/* Pending Ride Requests */}
+                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8">
+                                <h3 className="text-lg font-bold text-slate-900 mb-4">Pending Ride Requests</h3>
+                                {rideRequests.length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+                                        No pending ride requests for you right now.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {rideRequests.map((ride) => (
+                                            <div key={ride.id} className="rounded-2xl border border-slate-200 p-5">
+                                                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                                                    <div className="space-y-2">
+                                                        <div className="flex items-center gap-3 flex-wrap">
+                                                            <p className="text-base font-bold text-slate-900">Ride #{ride.id}</p>
+                                                            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 border border-amber-200">
+                                                                Pending acceptance
+                                                            </span>
+                                                            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-extrabold text-emerald-700 border border-emerald-200">
+                                                                Fare: {toCurrency(ride.estimatedFare)}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-sm text-slate-600 space-y-1">
+                                                            <p><span className="font-semibold text-slate-800">Pickup:</span> {ride.pickupAddress || 'N/A'}</p>
+                                                            <p><span className="font-semibold text-slate-800">Drop:</span> {ride.dropAddress || 'N/A'}</p>
+                                                            <p><span className="font-semibold text-slate-800">Goods:</span> {ride.goodsType || 'N/A'} {ride.goodsWeight ? `(${ride.goodsWeight} kg)` : ''}</p>
+                                                            {(ride.ctVehicleType || ride.ctBodyType || ride.ctTyreType) ? (
+                                                                <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                                                                    <span className="text-xs font-bold text-slate-500">Required:</span>
+                                                                    {ride.ctVehicleType && commonTypesMap[ride.ctVehicleType] && (
+                                                                        <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 text-xs font-bold border border-indigo-200">
+                                                                            🚚 {commonTypesMap[ride.ctVehicleType]}
+                                                                        </span>
+                                                                    )}
+                                                                    {ride.ctBodyType && commonTypesMap[ride.ctBodyType] && (
+                                                                        <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-bold border border-blue-200">
+                                                                            📦 {commonTypesMap[ride.ctBodyType]}
+                                                                        </span>
+                                                                    )}
+                                                                    {ride.ctTyreType && commonTypesMap[ride.ctTyreType] && (
+                                                                        <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-xs font-bold border border-slate-200">
+                                                                            🔘 {commonTypesMap[ride.ctTyreType]}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            ) : null}
+                                                            <p><span className="font-semibold text-slate-800">Estimated Fare:</span> {toCurrency(ride.estimatedFare)}</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex flex-col gap-3 sm:flex-row">
+                                                        <button
+                                                            onClick={() => acceptRide(ride)}
+                                                            className="rounded-xl bg-emerald-600 text-white font-semibold px-6 py-3"
+                                                        >
+                                                            Accept Ride
+                                                        </button>
+                                                        <button
+                                                            onClick={() => rejectRide(ride)}
+                                                            className="rounded-xl border border-red-300 text-red-700 font-semibold px-6 py-3"
+                                                        >
+                                                            Reject Ride
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setChatBookingId(ride.id)}
+                                                            className="rounded-xl border border-slate-300 bg-white text-slate-700 font-semibold px-5 py-3 flex items-center gap-2 hover:bg-slate-50 transition-colors"
+                                                        >
+                                                            <MessageCircle className="h-4 w-4 text-emerald-600" />
+                                                            Chat
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Ride History */}
+                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                                <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+                                    <History className="h-5 w-5 text-slate-700" /> Ride History & Issues
+                                </h3>
+                                {rideHistory.length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+                                        No previous rides found for this driver yet.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {rideHistory.map((ride) => (
+                                            <div key={ride.id} className="rounded-2xl border border-slate-200 p-5">
+                                                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                                    <div className="space-y-2">
+                                                        <div className="flex items-center gap-3 flex-wrap">
+                                                            <p className="text-base font-bold text-slate-900">Ride #{ride.id}</p>
+                                                            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                                                                {ride.rideStatus}
+                                                            </span>
+                                                            <span className="text-xs text-slate-500">
+                                                                {ride.customerName || 'Customer not available'}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-sm text-slate-600 space-y-1">
+                                                            <p><span className="font-semibold text-slate-800">Pickup:</span> {ride.pickupAddress || 'N/A'}</p>
+                                                            <p><span className="font-semibold text-slate-800">Drop:</span> {ride.dropAddress || 'N/A'}</p>
+                                                            <p><span className="font-semibold text-slate-800">Goods:</span> {ride.goodsType || 'N/A'}</p>
+                                                            <p><span className="font-semibold text-slate-800">Fare:</span> {toCurrency(ride.finalFare || ride.estimatedFare)}</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
 
@@ -1470,18 +2112,9 @@ const DriverDashboard = () => {
                         </div>
                     )}
 
-                    {activeTab === 'settings' && (
-                        <div className="space-y-12 pb-20">
-                            <header className="flex justify-between items-end mb-10 h-24">
-                                <div className="text-white">
-                                    <p className="text-indigo-200 font-medium tracking-wide text-sm mb-1 uppercase">SETTINGS</p>
-                                    <h1 className="text-3xl font-extrabold tracking-tight">App Settings</h1>
-                                </div>
-                            </header>
-                            <NotificationSettings role="driver" />
-                            <div className="border-t border-slate-200 pt-12">
-                                <SecuritySettings user={user} />
-                            </div>
+                    {(activeTab === 'settings' || activeTab === 'profile') && (
+                        <div className="pb-20">
+                            <ProfilePage isEmbedded={true} />
                         </div>
                     )}
                 </div>
@@ -1552,8 +2185,8 @@ const DriverDashboard = () => {
 
             {/* SOS Emergency Modal */}
             {isSosOpen && (
-                <div onClick={() => setIsSosOpen(false)} className="fixed inset-0 z-[3000] flex items-center justify-center bg-red-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border-2 border-red-600 animate-in zoom-in duration-300">
+                <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-red-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border-2 border-red-600 animate-in zoom-in duration-300">
                         <div className="flex items-center gap-3 text-red-600 mb-4">
                             <AlertTriangle className="h-8 w-8 fill-red-100 text-red-600 animate-pulse" />
                             <h3 className="text-xl font-black tracking-tight">SOS EMERGENCY ALERT</h3>
@@ -1578,38 +2211,51 @@ const DriverDashboard = () => {
 
             {/* Incoming Shipment Request Modal Pop-Up Alert */}
             {activeRequestPopup && (
-                <div onClick={() => setActiveRequestPopup(null)} className="fixed inset-0 z-[3500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200">
+                <div className="fixed inset-0 z-[3500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200">
                         {/* Header */}
-                        <div className={`px-6 py-5 flex items-center justify-between relative text-white ${
-                            activeRequestPopup.isTransporterAssigned ? 'bg-gradient-to-r from-purple-700 to-indigo-800' : 'bg-gradient-to-r from-sky-700 to-indigo-700'
-                        }`}>
-                            <div>
-                                <span className={`text-[10px] uppercase font-black tracking-widest px-2.5 py-1 rounded-full border ${
-                                    activeRequestPopup.isTransporterAssigned
-                                        ? 'text-amber-200 bg-amber-500/20 border-amber-400/30'
-                                        : 'text-sky-200 bg-sky-500/20 border-sky-300/30'
-                                }`}>
-                                    {activeRequestPopup.isTransporterAssigned ? '🏢 Customer Request Assigned by Transporter' : '👤 Direct Customer Request'}
-                                </span>
-                                <h3 className="text-lg font-black mt-1.5 tracking-tight flex items-center gap-1.5">
-                                    <span>Ride Request #{activeRequestPopup.id}</span>
-                                </h3>
-                                <p className="text-xs font-bold text-white/90 mt-1 flex items-center gap-1">
-                                    <span>Source:</span>
-                                    <span className="text-white font-extrabold underline">
-                                        {activeRequestPopup.isTransporterAssigned 
-                                            ? `Customer (${activeRequestPopup.customerName || 'Customer'}) • Assigned by Transporter (${activeRequestPopup.transporterName || 'Your Transporter'})`
-                                            : `Customer (${activeRequestPopup.customerName || 'Direct Booking'})`}
-                                    </span>
-                                </p>
+                        <div className="bg-indigo-600 text-white px-6 py-5 flex items-center justify-between relative">
+                            <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-full overflow-hidden bg-white/20 border-2 border-white/50 flex items-center justify-center font-black text-white text-base uppercase shrink-0 shadow-sm">
+                                    {activeRequestPopup.customerProfilePic ? (
+                                        <img 
+                                            src={
+                                                activeRequestPopup.customerProfilePic.startsWith('http') || activeRequestPopup.customerProfilePic.startsWith('data:')
+                                                    ? activeRequestPopup.customerProfilePic
+                                                    : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${activeRequestPopup.customerProfilePic.startsWith('/') ? '' : '/'}${activeRequestPopup.customerProfilePic}`
+                                            }
+                                            alt={activeRequestPopup.customerName || 'Customer'}
+                                            className="w-full h-full object-cover"
+                                            onError={(e) => {
+                                                (e.target as HTMLElement).style.display = 'none';
+                                            }}
+                                        />
+                                    ) : (
+                                        <span>{activeRequestPopup.customerName?.substring(0, 2) || 'CU'}</span>
+                                    )}
+                                </div>
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[10px] uppercase font-black tracking-widest text-indigo-200 bg-indigo-700/50 px-2 py-0.5 rounded-full border border-indigo-400/20">
+                                            {activeRequestPopup.assignedByTransporter ? 'Transporter Assigned' : 'Customer Request'}
+                                        </span>
+                                    </div>
+                                    <h3 className="text-lg font-black mt-0.5 tracking-tight flex items-center gap-1.5">
+                                        <span>{activeRequestPopup.customerName || `Ride #${activeRequestPopup.id}`}</span>
+                                    </h3>
+                                    {activeRequestPopup.assignedByTransporter && (
+                                        <p className="text-xs text-indigo-100 font-bold mt-0.5 bg-white/10 px-2 py-0.5 rounded-md inline-block">
+                                            🏢 Assigned by {activeRequestPopup.transporterName || 'Transporter'}
+                                        </p>
+                                    )}
+                                </div>
                             </div>
                             <button 
                                 onClick={() => {
                                     setDismissedRequestIds(prev => ({ ...prev, [activeRequestPopup.id]: true }));
                                     setActiveRequestPopup(null);
                                 }} 
-                                className="p-1.5 hover:bg-white/10 rounded-lg text-indigo-200 hover:text-white transition-colors cursor-pointer"
+                                className="p-1.5 hover:bg-white/10 rounded-lg text-indigo-200 hover:text-white transition-colors cursor-pointer self-start"
                             >
                                 <X className="h-5 w-5" />
                             </button>
@@ -1617,32 +2263,6 @@ const DriverDashboard = () => {
 
                         {/* Body */}
                         <div className="p-6 space-y-5">
-                            {/* Request Source Banner Card */}
-                            {activeRequestPopup.isTransporterAssigned ? (
-                                <div className="bg-purple-50 border border-purple-200/80 rounded-2xl p-3.5 flex items-center gap-3 shadow-sm">
-                                    <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center font-extrabold text-base shrink-0 shadow-md">
-                                        🏢
-                                    </div>
-                                    <div>
-                                        <span className="text-[10px] font-black uppercase tracking-wider text-purple-600 block">Fleet Order Assignment</span>
-                                        <p className="text-xs font-bold text-purple-950">
-                                            Request by Customer (<strong className="text-purple-700 font-extrabold">{activeRequestPopup.customerName || 'Customer'}</strong>) and assigned by your Transporter (<strong className="text-purple-700 font-extrabold">{activeRequestPopup.transporterName || 'your Transporter'}</strong>).
-                                        </p>
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="bg-sky-50 border border-sky-200/80 rounded-2xl p-3.5 flex items-center gap-3 shadow-sm">
-                                    <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center font-extrabold text-base shrink-0 shadow-md">
-                                        👤
-                                    </div>
-                                    <div>
-                                        <span className="text-[10px] font-black uppercase tracking-wider text-sky-600 block">Direct Customer Request</span>
-                                        <p className="text-xs font-bold text-sky-950">
-                                            Requested directly by Customer: <strong className="text-sky-700 font-extrabold">{activeRequestPopup.customerName || 'Direct Booking'}</strong>
-                                        </p>
-                                    </div>
-                                </div>
-                            )}
                             {/* Route Segment Card */}
                             <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4 space-y-3">
                                 <div className="flex gap-3">
@@ -1657,88 +2277,108 @@ const DriverDashboard = () => {
                                             <p className="font-bold text-slate-800 text-sm mt-0.5">{activeRequestPopup.pickupAddress}</p>
                                         </div>
                                         <div>
-                                            <p className="font-extrabold text-slate-400 uppercase tracking-wide">Destination Drop</p>
+                                            <p className="font-extrabold text-slate-400 uppercase tracking-wide">Drop Location</p>
                                             <p className="font-bold text-slate-800 text-sm mt-0.5">{activeRequestPopup.dropAddress}</p>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Details List */}
-                            <div className="space-y-3.5 text-sm text-slate-650 font-medium">
-                                <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
-                                    <span className="text-slate-400 font-semibold">Estimated Fare Price</span>
-                                    <span className="font-black text-lg text-emerald-600">₹ {activeRequestPopup.estimatedFare}</span>
-                                </div>
-                                <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
-                                    <span className="text-slate-400 font-semibold">Weight & Load Size</span>
-                                    <span className="font-extrabold text-slate-900">{activeRequestPopup.goodsWeight || 0} Tons ({activeRequestPopup.goodsType || 'General Goods'})</span>
-                                </div>
-                                <div className="flex justify-between items-center">
-                                    <span className="text-slate-400 font-semibold">Estimated Duration</span>
-                                    <span className="font-bold text-slate-800">
-                                        {(() => {
-                                            const dist = activeRequestPopup.pickupLat && activeRequestPopup.pickupLng && activeRequestPopup.dropLat && activeRequestPopup.dropLng
-                                                ? Math.max(1, Math.round(
-                                                    Math.sqrt(
-                                                        Math.pow(activeRequestPopup.pickupLat - activeRequestPopup.dropLat, 2) +
-                                                        Math.pow(activeRequestPopup.pickupLng - activeRequestPopup.dropLng, 2)
-                                                    ) * 111
-                                                  ))
-                                                : 15;
-                                            return `~${Math.round(dist * 2.5)} mins (${dist} km)`;
-                                        })()}
-                                    </span>
-                                </div>
-                            </div>
+                            {/* Goods & Load Info */}
+                            {(() => {
+                                const rawGoods = activeRequestPopup.goodsType || 'General Freight';
+                                const isTons = rawGoods.includes('[Unit: Tons]');
+                                const cleanGoods = rawGoods.replace(/\s*\[Unit:\s*Tons\]/gi, '').trim() || 'General Freight';
+                                const unit = isTons ? 'Tons' : 'kg';
+                                return (
+                                    <div className="grid grid-cols-2 gap-3 text-xs">
+                                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                            <p className="text-slate-400 font-bold uppercase">Goods</p>
+                                            <p className="font-extrabold text-slate-800 mt-0.5">{cleanGoods}</p>
+                                        </div>
+                                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                            <p className="text-slate-400 font-bold uppercase">Weight</p>
+                                            <p className="font-extrabold text-slate-800 mt-0.5">{activeRequestPopup.goodsWeight ? `${activeRequestPopup.goodsWeight} ${unit}` : 'N/A'}</p>
+                                        </div>
+                                    </div>
+                                );
+                            })()}
 
-                            {/* Accept and Reject Buttons */}
-                            <div className="flex gap-3 pt-2">
-                                <button
-                                    onClick={async () => {
-                                        setDismissedRequestIds(prev => ({ ...prev, [activeRequestPopup.id]: true }));
-                                        setActiveRequestPopup(null);
-                                        try {
-                                            await rejectRide(activeRequestPopup);
-                                        } catch (err) {
-                                            console.error("Failed to reject ride:", err);
-                                        }
-                                    }}
-                                    className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3.5 rounded-xl border border-slate-200 transition-all active:scale-[0.98] cursor-pointer text-center text-sm"
-                                >
-                                    Reject Request
-                                </button>
-                                <button
-                                    onClick={async () => {
-                                        setDismissedRequestIds(prev => ({ ...prev, [activeRequestPopup.id]: true }));
-                                        setActiveRequestPopup(null);
-                                        try {
-                                            // Trigger advanced acceptance state animations
-                                            setAcceptState('loading_route');
-                                            await new Promise(r => setTimeout(r, 1500));
-                                            setAcceptState('ready');
-                                            await new Promise(r => setTimeout(r, 1000));
-                                            
-                                            // Call accept API
-                                            await apiClient.post(`/Transport/acceptShipmentAsDriver?driverUserId=${driverUserId}&bookingId=${activeRequestPopup.id}`);
-                                            
-                                            // Complete assignment locally
-                                            setAcceptState('idle');
-                                            await refreshRides();
-                                        } catch (err: any) {
-                                            setAcceptState('idle');
-                                            alert(err?.response?.data?.message || err?.response?.data || 'Unable to accept shipment.');
-                                        }
-                                    }}
-                                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-indigo-600/20 transition-all active:scale-[0.98] cursor-pointer text-center text-sm"
-                                >
-                                    Accept Request
-                                </button>
+                            {/* Vehicle Specs Badge in Popup (Only shown if customer specified them) */}
+                            {(activeRequestPopup.ctVehicleType || activeRequestPopup.ctBodyType || activeRequestPopup.ctTyreType) ? (
+                                <div className="bg-slate-50 border border-slate-200/80 p-3.5 rounded-2xl text-xs space-y-2">
+                                    <p className="text-[10px] uppercase font-black text-slate-400 tracking-wider">Required Vehicle Specifications</p>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                        {activeRequestPopup.ctVehicleType ? (
+                                            <div className="bg-white p-2.5 rounded-xl border border-slate-200/60 shadow-xs">
+                                                <p className="text-[9px] font-bold text-slate-400 uppercase">Vehicle Type</p>
+                                                <p className="text-xs font-black text-indigo-700 truncate mt-0.5">
+                                                    {commonTypesMap[activeRequestPopup.ctVehicleType] || `Type #${activeRequestPopup.ctVehicleType}`}
+                                                </p>
+                                            </div>
+                                        ) : null}
+                                        {activeRequestPopup.ctBodyType ? (
+                                            <div className="bg-white p-2.5 rounded-xl border border-slate-200/60 shadow-xs">
+                                                <p className="text-[9px] font-bold text-slate-400 uppercase">Body Type</p>
+                                                <p className="text-xs font-black text-blue-700 truncate mt-0.5">
+                                                    {commonTypesMap[activeRequestPopup.ctBodyType] || `Body #${activeRequestPopup.ctBodyType}`}
+                                                </p>
+                                            </div>
+                                        ) : null}
+                                        {activeRequestPopup.ctTyreType ? (
+                                            <div className="bg-white p-2.5 rounded-xl border border-slate-200/60 shadow-xs">
+                                                <p className="text-[9px] font-bold text-slate-400 uppercase">Tyre Type</p>
+                                                <p className="text-xs font-black text-slate-800 truncate mt-0.5">
+                                                    {commonTypesMap[activeRequestPopup.ctTyreType] || `Tyre #${activeRequestPopup.ctTyreType}`}
+                                                </p>
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                </div>
+                            ) : null}
+
+                            {/* Estimated Fare Highlight */}
+                            <div className="bg-emerald-50 border border-emerald-200/80 rounded-2xl p-4 flex items-center justify-between">
+                                <div>
+                                    <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide">Estimated Fare</p>
+                                    <p className="text-2xl font-black text-emerald-700 tracking-tight mt-0.5">
+                                        {toCurrency(activeRequestPopup.estimatedFare)}
+                                    </p>
+                                </div>
+                                <div className="h-10 w-10 bg-emerald-500 rounded-full flex items-center justify-center text-white shadow-md shadow-emerald-500/30 font-black">
+                                    ₹
+                                </div>
                             </div>
+                        </div>
+
+                        {/* Footer Action Buttons */}
+                        <div className="p-4 bg-slate-50 border-t border-slate-100 flex gap-3">
+                            <button
+                                onClick={() => {
+                                    setDismissedRequestIds(prev => ({ ...prev, [activeRequestPopup.id]: true }));
+                                    setActiveRequestPopup(null);
+                                    rejectRide(activeRequestPopup);
+                                }}
+                                className="flex-1 py-3 px-4 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold text-sm transition-all cursor-pointer"
+                            >
+                                Decline
+                            </button>
+                            <button
+                                onClick={() => {
+                                    const currentPop = activeRequestPopup;
+                                    setDismissedRequestIds(prev => ({ ...prev, [currentPop.id]: true }));
+                                    setActiveRequestPopup(null);
+                                    acceptRide(currentPop);
+                                }}
+                                className="flex-1 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm shadow-lg shadow-emerald-600/30 transition-all active:scale-[0.98] cursor-pointer"
+                            >
+                                Accept Load
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
+
             {chatToast && (
                 <div 
                     onClick={() => {
@@ -1748,8 +2388,8 @@ const DriverDashboard = () => {
                             setDirectChatRoomName(chatToast.roomName);
                         }
                         setChatToast(null);
-                    }}
-                    className="fixed bottom-6 right-6 z-50 max-w-sm w-full bg-slate-900/95 backdrop-blur text-white rounded-2xl p-4 shadow-2xl border border-slate-700/50 flex flex-col gap-3 animate-in slide-in-from-bottom-5 duration-300 cursor-pointer"
+                    }} 
+                    className="fixed bottom-24 right-6 z-50 max-w-sm w-full bg-slate-900/95 backdrop-blur text-white rounded-2xl p-4 shadow-2xl border border-slate-700/50 flex flex-col gap-3 animate-in slide-in-from-bottom-5 duration-300 cursor-pointer"
                 >
                     <div className="flex justify-between items-start">
                         <div className="flex items-center gap-2 text-teal-400 font-bold text-sm">
@@ -1775,108 +2415,203 @@ const DriverDashboard = () => {
                     </div>
                 </div>
             )}
-            {/* Post-Ride Driver Payment Collection Modal */}
-            {showPaymentCollectionModal && (
-                <div onClick={() => setShowPaymentCollectionModal(null)} className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-100 text-center space-y-4 relative">
-                        <button 
-                            onClick={() => setShowPaymentCollectionModal(null)}
-                            className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 text-xl font-bold cursor-pointer"
-                        >
-                            ✕
-                        </button>
-                        <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-3xl mx-auto shadow-sm">
-                            💰
-                        </div>
-                        <div>
-                            <h3 className="text-xl font-black text-slate-900">Collect Ride Payment</h3>
-                            <p className="text-xs text-slate-500 mt-1">Select how customer is paying for Ride #{showPaymentCollectionModal.id}</p>
-                        </div>
 
-                        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center">
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Total Ride Fare</p>
-                            <p className="text-3xl font-black text-slate-900 mt-1">₹{showPaymentCollectionModal.estimatedFare || showPaymentCollectionModal.finalFare || 0}</p>
-                        </div>
-
-                        <div className="space-y-3 pt-2">
-                            {/* Option 1: Cash Collected */}
+            {/* Flexible Payment Modal (Advance, In-between, After Completed) */}
+            {paymentModalRide && (
+                <div 
+                    onClick={() => setPaymentModalRide(null)}
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 flex flex-col gap-5 cursor-default"
+                    >
+                        <div className="flex justify-between items-center pb-3 border-b border-slate-100">
+                            <div>
+                                <h3 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                                    <Banknote className="h-6 w-6 text-teal-600" /> Collect Payment
+                                </h3>
+                                <p className="text-xs text-slate-500 font-semibold mt-0.5">
+                                    Ride #{paymentModalRide.id} • Status: <span className="text-indigo-600 font-bold capitalize">{paymentModalRide.rideStatus || 'Active'}</span>
+                                </p>
+                            </div>
                             <button
-                                onClick={async () => {
-                                    try {
-                                        const pType = showPaymentCollectionModal.rideStatus === 'ride_started' ? 'PostRide' : 'Advance';
-                                        await apiClient.post(`/Vehicle/${showPaymentCollectionModal.id}/processPayment?paymentMethod=COD&paymentType=${pType}`);
-                                        const targetRide = showPaymentCollectionModal;
-                                        setShowPaymentCollectionModal(null);
-                                        if (targetRide.rideStatus === 'ride_started') {
-                                            await advanceRideStatus(targetRide, 'ride_completed');
-                                        } else {
-                                            alert("Advance cash payment recorded successfully!");
-                                            fetchDashboardData();
-                                        }
-                                    } catch(e) {
-                                        console.error("Payment error:", e);
-                                    }
-                                }}
-                                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-xl text-sm shadow-md transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
+                                onClick={() => setPaymentModalRide(null)}
+                                className="h-9 w-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors cursor-pointer"
                             >
-                                💵 Cash Collected (COD)
+                                <X className="h-5 w-5" />
                             </button>
+                        </div>
 
-                            {/* Option 2: Show Dynamic UPI QR Scanner */}
-                            <div className="border-t border-slate-100 pt-3">
-                                <p className="text-xs font-bold text-slate-500 mb-2">OR Customer Pay via UPI QR:</p>
-                                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner mb-3">
-                                    <img 
-                                        src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=upi://pay?pa=navgatix@bank%26pn=Navgatix%26am=${showPaymentCollectionModal.estimatedFare || 100}%26tr=${showPaymentCollectionModal.id}`}
-                                        alt="UPI QR Scanner" 
-                                        className="w-44 h-44 mx-auto rounded-xl"
+                        {/* Payment Mode Selector */}
+                        <div className="flex bg-slate-100 p-1.5 rounded-2xl gap-1.5">
+                            <button
+                                type="button"
+                                onClick={() => setPaymentMode('QR')}
+                                className={`flex-1 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                                    paymentMode === 'QR'
+                                        ? 'bg-white text-teal-700 shadow-sm'
+                                        : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                            >
+                                <QrCode className="h-4 w-4" /> QR Code (UPI)
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setPaymentMode('Cash')}
+                                className={`flex-1 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                                    paymentMode === 'Cash'
+                                        ? 'bg-white text-emerald-700 shadow-sm'
+                                        : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                            >
+                                <Banknote className="h-4 w-4" /> Cash in Hand
+                            </button>
+                        </div>
+
+                        {/* Amount Input */}
+                        <div className="space-y-1.5">
+                            <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+                                Payment Amount (₹)
+                            </label>
+                            <div className="relative">
+                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-base">₹</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    value={customPaymentAmount}
+                                    onChange={(e) => setCustomPaymentAmount(e.target.value)}
+                                    placeholder="Enter amount"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-9 pr-4 py-3 text-base font-extrabold text-slate-900 focus:outline-none focus:border-teal-500 focus:bg-white transition-all"
+                                />
+                            </div>
+                            <p className="text-[11px] text-slate-400 font-medium">
+                                Estimated Fare: {toCurrency(paymentModalRide.finalFare || paymentModalRide.estimatedFare || 0)} (can collect full or advance)
+                            </p>
+                        </div>
+
+                        {/* Mode specifics */}
+                        {paymentMode === 'QR' ? (
+                            <div className="bg-gradient-to-b from-slate-50 to-teal-50/40 p-5 rounded-2xl border border-teal-100 text-center space-y-3">
+                                <p className="text-xs font-bold text-teal-800">
+                                    Scan QR code with any UPI app (GPay, PhonePe, Paytm)
+                                </p>
+                                <div className="bg-white p-3 rounded-2xl inline-block shadow-md border border-slate-200">
+                                    <img
+                                        src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
+                                            `upi://pay?pa=navgatix@upi&pn=Navgatix Logistics&am=${customPaymentAmount || 0}&tn=Ride-${paymentModalRide.id}&cu=INR`
+                                        )}`}
+                                        alt="UPI QR Code"
+                                        className="w-40 h-40 object-contain mx-auto"
                                     />
                                 </div>
-                                <button
-                                    onClick={async () => {
-                                        try {
-                                            const pType = showPaymentCollectionModal.rideStatus === 'ride_started' ? 'PostRide' : 'Advance';
-                                            await apiClient.post(`/Vehicle/${showPaymentCollectionModal.id}/processPayment?paymentMethod=UPI&paymentType=${pType}`);
-                                            const targetRide = showPaymentCollectionModal;
-                                            setShowPaymentCollectionModal(null);
-                                            if (targetRide.rideStatus === 'ride_started') {
-                                                await advanceRideStatus(targetRide, 'ride_completed');
-                                            } else {
-                                                alert("Advance UPI payment confirmed!");
-                                                fetchDashboardData();
-                                            }
-                                        } catch(e) {
-                                            console.error("Payment error:", e);
-                                        }
-                                    }}
-                                    className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl text-sm shadow-md transition-all active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
-                                >
-                                    📱 Confirm UPI Payment Received
-                                </button>
+                                <p className="text-[11px] text-slate-500 font-medium">
+                                    Ask customer to scan to complete payment.
+                                </p>
                             </div>
+                        ) : (
+                            <div className="bg-emerald-50/70 p-4 rounded-2xl border border-emerald-100 text-center space-y-2">
+                                <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
+                                    <Banknote className="h-5 w-5" />
+                                </div>
+                                <p className="text-xs font-bold text-emerald-900">
+                                    Cash Collection Mode
+                                </p>
+                                <p className="text-xs text-slate-600 font-medium">
+                                    Collect ₹{customPaymentAmount || 0} in cash directly from customer and confirm below.
+                                </p>
+                            </div>
+                        )}
+
+                        {/* Confirm Button */}
+                        <div className="flex gap-3 pt-2">
+                            <button
+                                type="button"
+                                onClick={() => setPaymentModalRide(null)}
+                                className="flex-1 py-3 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold text-sm transition-all cursor-pointer"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isRecordingPayment || !customPaymentAmount || Number(customPaymentAmount) <= 0}
+                                onClick={async () => {
+                                    const amountNum = Number(customPaymentAmount);
+                                    if (amountNum <= 0) {
+                                        alert('Please enter a valid amount.');
+                                        return;
+                                    }
+                                    setIsRecordingPayment(true);
+                                    try {
+                                        const res = await apiClient.post('/DriverFinance/ridePayment', {
+                                            rideId: paymentModalRide.id,
+                                            amount: amountNum,
+                                            paymentMode: paymentMode === 'QR' ? 'UPI_QR' : 'Cash',
+                                            transactionReference: `${paymentMode}_Ride_${paymentModalRide.id}_${Date.now()}`
+                                        });
+                                        if (res.data && res.data.success === false) {
+                                            alert(res.data.message || 'Payment recording failed.');
+                                            return;
+                                        }
+                                        if (paymentMode === 'Cash') {
+                                            const comm = (amountNum * 0.10).toFixed(2);
+                                            alert(`Cash payment of ₹${amountNum} confirmed! ₹${comm} app commission deducted from your wallet.`);
+                                        } else {
+                                            const net = (amountNum * 0.90).toFixed(2);
+                                            alert(`Online payment of ₹${amountNum} recorded! Net ₹${net} credited to your wallet.`);
+                                        }
+                                        setPaymentModalRide(null);
+                                        await refreshRides();
+                                        try {
+                                            const wRes = await apiClient.get(`/DriverFinance/wallet/${driverUserId}`);
+                                            setWallet(wRes.data || {});
+                                        } catch (e) {}
+                                    } catch (err: any) {
+                                        alert(err?.response?.data?.message || err?.response?.data?.Message || 'Payment recording failed.');
+                                    } finally {
+                                        setIsRecordingPayment(false);
+                                    }
+                                }}
+                                className="flex-1 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 text-white font-extrabold text-sm shadow-lg shadow-teal-600/30 transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+                            >
+                                <CheckCircle2 className="h-4 w-4" />
+                                {isRecordingPayment ? 'Recording...' : 'Confirm Received'}
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
-            {/* Mobile Bottom Quick Navigation */}
-            <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-slate-900 border-t border-slate-800 text-white shadow-2xl flex items-center justify-around py-2 px-1 pb-safe">
-                <button onClick={() => setActiveTab('overview')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'overview' ? 'text-primary-400' : 'text-slate-400'}`}>
-                    <Home className="h-5 w-5" />
-                    Home
-                </button>
-                <button onClick={() => setActiveTab('wallet')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'wallet' ? 'text-primary-400' : 'text-slate-400'}`}>
-                    <Wallet className="h-5 w-5" />
-                    Wallet
-                </button>
-                <button onClick={() => setActiveTab('shipments')} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'shipments' ? 'text-primary-400' : 'text-slate-400'}`}>
-                    <Package className="h-5 w-5" />
-                    Shipments
-                </button>
-                <button onClick={() => navigate('/profile')} className={`flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400`}>
-                    <User className="h-5 w-5" />
-                    Profile
-                </button>
-            </div>
+
+            {/* Mobile Bottom Navigation Bar */}
+            <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200/80 py-2 px-2 flex items-center justify-around shadow-2xl safe-area-bottom">
+                {[
+                    { id: 'overview', label: 'Home', icon: LayoutDashboard },
+                    { id: 'rides', label: 'Ride / Request', icon: Truck },
+                    { id: 'wallet', label: 'Wallet', icon: Wallet },
+                    { id: 'profile', label: 'Profile', icon: Settings },
+                ].map((item) => {
+                    const Icon = item.icon;
+                    const isActive = activeTab === item.id || (item.id === 'profile' && activeTab === 'settings');
+                    return (
+                        <button
+                            key={item.id}
+                            onClick={() => {
+                                setActiveTab(item.id as any);
+                                setSidebarOpen(false);
+                            }}
+                            className={`flex flex-col items-center justify-center py-1.5 px-3 rounded-2xl transition-all duration-200 active:scale-90 cursor-pointer ${
+                                isActive
+                                    ? 'text-indigo-600 font-extrabold bg-indigo-50/80 shadow-sm'
+                                    : 'text-slate-500 hover:text-slate-800 font-medium'
+                            }`}
+                        >
+                            <Icon className={`h-5 w-5 ${isActive ? 'text-indigo-600 stroke-[2.5]' : 'text-slate-500'}`} />
+                            <span className="text-[10px] mt-0.5 tracking-tight font-bold">{item.label}</span>
+                        </button>
+                    );
+                })}
+            </nav>
         </div>
     );
 };

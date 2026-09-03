@@ -59,7 +59,6 @@ namespace satguruApp.Service.Services
                 CreatedDate = DateTime.UtcNow
             };
 
-
             target.FirstName = userInfo.FirstName ?? target.FirstName;
             target.LastName = userInfo.LastName ?? target.LastName;
             target.Email = userInfo.Email ?? target.Email;
@@ -75,6 +74,10 @@ namespace satguruApp.Service.Services
             target.GenderId = userInfo.GenderId ?? target.GenderId;
             target.Description = userInfo.Description ?? target.Description;
             target.ProfilePic = userInfo.ProfilePic ?? target.ProfilePic;
+            if (!string.IsNullOrEmpty(userInfo.Address))
+            {
+                target.WhatsAppLink = userInfo.Address;
+            }
             target.IsDeleted = false;
             target.UpdatedDate = DateTime.UtcNow;
 
@@ -87,6 +90,7 @@ namespace satguruApp.Service.Services
             userInfo.Id = target.Id;
             return userInfo;
         }
+
         public async Task<UserInfoViewModel> SaveAsync(UserInfoViewModel userInfo)
         {
             if (userInfo == null || string.IsNullOrWhiteSpace(userInfo.UserId))
@@ -138,6 +142,10 @@ namespace satguruApp.Service.Services
             target.GenderId = userInfo.GenderId ?? target.GenderId;
             target.Description = userInfo.Description ?? target.Description;
             target.ProfilePic = userInfo.ProfilePic ?? target.ProfilePic;
+            if (!string.IsNullOrEmpty(userInfo.Address))
+            {
+                target.WhatsAppLink = userInfo.Address;
+            }
             target.IsDeleted = false;
             target.UpdatedDate = DateTime.UtcNow;
 
@@ -150,6 +158,7 @@ namespace satguruApp.Service.Services
             userInfo.Id = target.Id;
             return userInfo;
         }
+
         public async Task<int> UpdateProfilePic(string userId, string profilePic)
         {
             var userInfo = await _db.UserInformations.Where(x => x.UserId == userId).FirstOrDefaultAsync();
@@ -196,13 +205,15 @@ namespace satguruApp.Service.Services
                                   GenderId = user.GenderId,
                                   Gender = gender.Name,
                                   AccountTypeName = accountType.Name,
+                                  Address = user.WhatsAppLink,
+                                  ProfilePic = user.ProfilePic,
+                                  Description = user.Description,
                                   IsOnline = user.IsOnline
                               }).FirstOrDefaultAsync();
 
             }
             catch (Exception ex)
             {
-
                 return null;
             }
         }
@@ -263,9 +274,13 @@ namespace satguruApp.Service.Services
                 GenderId = x.user.GenderId,
                 Gender = x.gender.Name,
                 AccountTypeName = x.accountType.Name,
+                Address = x.user.WhatsAppLink,
+                ProfilePic = x.user.ProfilePic,
+                Description = x.user.Description,
                 IsOnline = x.user.IsOnline
             }).ToListAsync();
         }
+
         public async Task<List<UserInfoViewModel>> GetUserDetailList(UserSearchViewModel userSearch)
         {
             return await (from user in _db.Users
@@ -304,14 +319,14 @@ namespace satguruApp.Service.Services
                               Gender = gender.Name,
                               Description = userInfo.Description,
                               ProfilePic = userInfo.ProfilePic,
+                              Address = userInfo.WhatsAppLink,
                               AccountTypeName = accountType.Name,
                               IsOnline = userInfo.IsOnline
                           }).ToListAsync();
-
         }
+
         public async Task<UserInfoViewModel> GetUserDetail(string userId)
         {
-
             var userDeail = await (from user in _db.Users
                                    join userInfo in _db.UserInformations on user.Id equals userInfo.UserId into userInfos
                                    from userInfo in userInfos.DefaultIfEmpty()
@@ -346,6 +361,7 @@ namespace satguruApp.Service.Services
                                        AccountTypeName = accountType != null ? accountType.Name : "",
                                        Description = userInfo != null ? userInfo.Description : "",
                                        ProfilePic = userInfo != null ? userInfo.ProfilePic : "",
+                                       Address = userInfo != null ? userInfo.WhatsAppLink : "",
                                        IsOnline = userInfo.IsOnline ?? false
                                    }).FirstOrDefaultAsync();
 

@@ -1,17 +1,25 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Anchor, ArrowRightLeft, CheckCircle, Database, History, Info, Layout, MapPin, MessageCircle, Navigation, Package, Search, Truck, User, X, LayoutDashboard, Settings, LogOut, Menu, ChevronDown, CreditCard, Bell, Key, Home, Star, Loader2, Bookmark, Building, Plus, Trash2 } from 'lucide-react';
+import { Anchor, ArrowRightLeft, Bookmark, CheckCircle, ClipboardList, Database, History, Info, Layout, MapPin, MessageCircle, Navigation, Package, Search, Truck, User, X, LayoutDashboard, Settings, LogOut, Menu, ChevronDown, CreditCard, Bell, Key, Home, Star } from 'lucide-react';
 import apiClient from '../../api/apiClient';
 import { fetchVehicleCommonTypes } from '../../services/vehicleCommonTypes';
 import { normalizeCommonTypes, type NormalizedCommonType } from '../../lib/commonTypes';
-import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
+import { getSavedAddresses, upsertSavedAddress, type SavedAddress } from '../../services/savedAddressService';
+import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+
+const MapController = ({ center, zoom }: { center: [number, number]; zoom: number }) => {
+    const map = useMap();
+    useEffect(() => {
+        if (center && Number.isFinite(center[0]) && Number.isFinite(center[1]) && center[0] !== 0 && center[1] !== 0) {
+            map.flyTo(center, zoom, { duration: 1.2 });
+        }
+    }, [center, zoom, map]);
+    return null;
+};
 import TrackingMap from '../../components/TrackingMap';
 import ChatPanel from '../../components/ChatPanel';
-import scooterImg from '../../assets/vehicles/scooter.png';
-import autoImg from '../../assets/vehicles/auto.png';
-import truckImg from '../../assets/vehicles/truck.png';
 
 // Fix for default marker icon in react-leaflet
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -35,12 +43,15 @@ interface Shipment {
     pickup: string;
     destination: string;
     weight: number;
+    weightUnit?: string;
     vehicle: string;
     matchedCount: number;
     status: RideStatus;
     date: string;
     driverName?: string;
     driverPhone?: string;
+    driverUserId?: string;
+    driverProfilePic?: string;
     vehicleNumber?: string;
     vehicleName?: string;
     pickupLat?: number;
@@ -48,7 +59,6 @@ interface Shipment {
     dropLat?: number;
     dropLng?: number;
     estimatedFare?: number;
-    paymentStatus?: string;
 }
 
 
@@ -70,91 +80,6 @@ const FALLBACK_PRODUCT_TYPES: NormalizedCommonType[] = DEFAULT_PRODUCT_TYPES.map
     name,
 }));
 
-const MapAutoController = ({ 
-    pLat, 
-    pLng, 
-    dLat, 
-    dLng, 
-    focus 
-}: { 
-    pLat: number; 
-    pLng: number; 
-    dLat: number; 
-    dLng: number; 
-    focus: 'pickup' | 'destination' | 'both' | null; 
-}) => {
-    const map = useMap();
-
-    useEffect(() => {
-        const hasP = Number.isFinite(pLat) && pLat !== 0;
-        const hasD = Number.isFinite(dLat) && dLat !== 0;
-
-        if (focus === 'pickup' && hasP) {
-            map.flyTo([pLat, pLng], 14, { duration: 1.2 });
-        } else if (focus === 'destination' && hasD) {
-            map.flyTo([dLat, dLng], 14, { duration: 1.2 });
-        } else if (hasP && hasD) {
-            const bounds = L.latLngBounds([[pLat, pLng], [dLat, dLng]]);
-            map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15, animate: true });
-        } else if (hasP) {
-            map.flyTo([pLat, pLng], 14, { duration: 1.2 });
-        } else if (hasD) {
-            map.flyTo([dLat, dLng], 14, { duration: 1.2 });
-        }
-    }, [pLat, pLng, dLat, dLng, focus, map]);
-
-    return null;
-};
-
-export interface SavedAddress {
-    id: string;
-    title: string;
-    address: string;
-    lat: number;
-    lng: number;
-    buildingNo?: string;
-    houseNo?: string;
-    category?: 'home' | 'office' | 'warehouse' | 'other';
-}
-
-const DEFAULT_SAVED_ADDRESSES: SavedAddress[] = [
-    {
-        id: 'saved-1',
-        title: 'Home (Sector 17)',
-        address: 'Sector 17, Chandigarh, 160017, India',
-        lat: 30.7333,
-        lng: 76.7794,
-        category: 'home',
-        houseNo: 'House #102'
-    },
-    {
-        id: 'saved-2',
-        title: 'Office (IT Park)',
-        address: 'Phase 8, IT Park, Mohali, Punjab 160071, India',
-        lat: 30.7046,
-        lng: 76.7179,
-        category: 'office',
-        buildingNo: 'Tower B, 4th Floor'
-    },
-    {
-        id: 'saved-3',
-        title: 'Main Warehouse',
-        address: 'Industrial Area Phase 1, Panchkula, Haryana 134113, India',
-        lat: 30.6942,
-        lng: 76.8606,
-        category: 'warehouse',
-        buildingNo: 'Plot #45'
-    },
-    {
-        id: 'saved-4',
-        title: 'Sirsa Hub',
-        address: 'Bus Stand Road, Sirsa, Haryana 125055, India',
-        lat: 29.5336,
-        lng: 75.0298,
-        category: 'other'
-    }
-];
-
 const CustomerDashboard = () => {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
@@ -168,6 +93,7 @@ const CustomerDashboard = () => {
     const [bodyTypes, setBodyTypes] = useState<NormalizedCommonType[]>([]);
     const [tyreTypes, setTyreTypes] = useState<NormalizedCommonType[]>([]);
     const [productTypes, setProductTypes] = useState<NormalizedCommonType[]>([]);
+    const [selectedCategory, setSelectedCategory] = useState<'bike' | 'auto' | 'truck'>('truck');
 
     const [formData, setFormData] = useState({
         productType: '',
@@ -179,6 +105,7 @@ const CustomerDashboard = () => {
         dropLat: '',
         dropLng: '',
         weight: '',
+        weightUnit: 'kg' as 'kg' | 'Tons',
         vehicle: '', 
         ctBodyType: '',
         ctTyreType: '',
@@ -187,6 +114,13 @@ const CustomerDashboard = () => {
         dropBuildingNo: '',
         dropHouseNo: '',
     });
+    const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
+    const [dropSuggestions, setDropSuggestions] = useState<any[]>([]);
+    const [showPickupSuggestions, setShowPickupSuggestions] = useState(false);
+    const [showDropSuggestions, setShowDropSuggestions] = useState(false);
+    const [mapCenter, setMapCenter] = useState<[number, number]>([20.5937, 78.9629]);
+    const [mapZoom, setMapZoom] = useState<number>(5);
+
     const [submitStatus, setSubmitStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
     const [errorMessage, setErrorMessage] = useState('');
     const [disputeDrafts, setDisputeDrafts] = useState<Record<number, string>>({});
@@ -209,8 +143,6 @@ const CustomerDashboard = () => {
     const [submittingRating, setSubmittingRating] = useState(false);
 
     const lastSeenNotifIdsRef = useRef<Set<string>>(new Set());
-    const handledCancellationNotifIdsRef = useRef<Set<string>>(new Set());
-    const [shipmentMetrics, setShipmentMetrics] = useState<Record<number, { distanceKm: number; etaMins: number; phase: 'pickup' | 'delivery' }>>({});
     const [chatToast, setChatToast] = useState<{
         id: string;
         bookingId?: number;
@@ -218,164 +150,31 @@ const CustomerDashboard = () => {
         senderName: string;
         messageText: string;
     } | null>(null);
-    const [locatingField, setLocatingField] = useState<'pickup' | 'destination' | null>(null);
-    const [activeMapFocus, setActiveMapFocus] = useState<'pickup' | 'destination' | 'both' | null>(null);
-    const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
-    const [dropSuggestions, setDropSuggestions] = useState<any[]>([]);
-    const [showPickupSuggestions, setShowPickupSuggestions] = useState(false);
-    const [showDropSuggestions, setShowDropSuggestions] = useState(false);
 
-    // Saved Addresses State
-    const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>(() => {
-        try {
-            const local = localStorage.getItem('navgatix_saved_addresses');
-            if (local) {
-                const parsed = JSON.parse(local);
-                if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            }
-        } catch (e) {
-            console.error('Failed to parse saved addresses', e);
-        }
-        return DEFAULT_SAVED_ADDRESSES;
+    // Saved Address Management & Sync
+    const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>(() => getSavedAddresses());
+    const [showSaveAddressModal, setShowSaveAddressModal] = useState<{ open: boolean; target: 'pickup' | 'destination'; text: string; lat: string; lng: string }>({
+        open: false,
+        target: 'pickup',
+        text: '',
+        lat: '',
+        lng: ''
     });
+    const [modalAddressLabel, setModalAddressLabel] = useState('Home');
+    const [modalCustomLabel, setModalCustomLabel] = useState('');
+    const [saveAddressFeedback, setSaveAddressFeedback] = useState('');
 
-    const [activeSavedAddressModal, setActiveSavedAddressModal] = useState<'pickup' | 'destination' | null>(null);
-    const [savedSearchQuery, setSavedSearchQuery] = useState('');
-    const [isAddingNewSaved, setIsAddingNewSaved] = useState(false);
-    const [newSavedTitle, setNewSavedTitle] = useState('');
-    const [newSavedCategory, setNewSavedCategory] = useState<'home' | 'office' | 'warehouse' | 'other'>('home');
-
-    const handleSelectSavedAddress = (item: SavedAddress, targetField: 'pickup' | 'destination') => {
-        if (targetField === 'pickup') {
-            setFormData(prev => ({
-                ...prev,
-                pickup: item.address,
-                pickupLat: item.lat.toFixed(6),
-                pickupLng: item.lng.toFixed(6),
-                pickupBuildingNo: item.buildingNo || prev.pickupBuildingNo,
-                pickupHouseNo: item.houseNo || prev.pickupHouseNo,
-            }));
-            setActiveMapFocus('pickup');
-        } else {
-            setFormData(prev => ({
-                ...prev,
-                destination: item.address,
-                dropLat: item.lat.toFixed(6),
-                dropLng: item.lng.toFixed(6),
-                dropBuildingNo: item.buildingNo || prev.dropBuildingNo,
-                dropHouseNo: item.houseNo || prev.dropHouseNo,
-            }));
-            setActiveMapFocus('destination');
-        }
-        setActiveSavedAddressModal(null);
-    };
-
-    const handleSaveCurrentAsSavedAddress = (targetField: 'pickup' | 'destination') => {
-        const addrText = targetField === 'pickup' ? formData.pickup : formData.destination;
-        const latVal = parseFloat(targetField === 'pickup' ? formData.pickupLat : formData.dropLat);
-        const lngVal = parseFloat(targetField === 'pickup' ? formData.pickupLng : formData.dropLng);
-        const bNo = targetField === 'pickup' ? formData.pickupBuildingNo : formData.dropBuildingNo;
-        const hNo = targetField === 'pickup' ? formData.pickupHouseNo : formData.dropHouseNo;
-
-        if (!addrText || isNaN(latVal) || isNaN(lngVal)) {
-            alert('Please enter and locate a valid address on the map first before saving it.');
-            return;
-        }
-
-        const newAddr: SavedAddress = {
-            id: `saved-${Date.now()}`,
-            title: newSavedTitle.trim() || (targetField === 'pickup' ? 'Saved Pickup Address' : 'Saved Drop Address'),
-            address: addrText,
-            lat: latVal,
-            lng: lngVal,
-            buildingNo: bNo,
-            houseNo: hNo,
-            category: newSavedCategory
+    useEffect(() => {
+        const handleSyncSavedAddresses = () => {
+            setSavedAddresses(getSavedAddresses());
         };
-
-        const updated = [newAddr, ...savedAddresses];
-        setSavedAddresses(updated);
-        try {
-            localStorage.setItem('navgatix_saved_addresses', JSON.stringify(updated));
-        } catch (e) {
-            console.error(e);
-        }
-        setNewSavedTitle('');
-        setIsAddingNewSaved(false);
-    };
-
-    const handleDeleteSavedAddress = (id: string, e: React.MouseEvent) => {
-        e.stopPropagation();
-        const updated = savedAddresses.filter(a => a.id !== id);
-        setSavedAddresses(updated);
-        try {
-            localStorage.setItem('navgatix_saved_addresses', JSON.stringify(updated));
-        } catch (err) {
-            console.error(err);
-        }
-    };
-
-    const [selectedCategory, setSelectedCategory] = useState<'two_wheeler' | 'three_wheeler' | 'truck' | null>(null);
-
-    const TRUCK_SUBTYPES = [
-        { key: 'mini', label: 'Mini Truck (Tata Ace)', icon: '🚚', keywords: ['mini truck', 'tata ace', 'veh003'] },
-        { key: 'pickup', label: 'Pickup Truck (LCV)', icon: '🛻', keywords: ['pickup', 'lcv', 'veh004'] },
-        { key: '14ft', label: '14 Ft Truck', icon: '🚛', keywords: ['14 ft', '14ft', 'veh005'] },
-        { key: '17ft', label: '17 Ft Truck', icon: '🚛', keywords: ['17 ft', '17ft', 'veh006'] },
-        { key: '20ft', label: '20 Ft Truck', icon: '🚛', keywords: ['20 ft', '20ft', 'veh007'] },
-        { key: '24ft', label: '24 Ft Truck', icon: '🚛', keywords: ['24 ft', '24ft', 'veh008'] },
-        { key: '32ft', label: '32 Ft Truck', icon: '🚛', keywords: ['32 ft', '32ft', 'veh009'] },
-        { key: 'container', label: 'Container Truck', icon: '🚢', keywords: ['container', 'veh010'] },
-    ];
-
-    const findVehicleTypeByKeywords = (keywords: string[]) => {
-        if (!Array.isArray(vehicleTypes) || vehicleTypes.length === 0) return null;
-        return vehicleTypes.find((vt) => {
-            const nameLower = (vt.name || '').toLowerCase();
-            const codeLower = (vt.code || '').toLowerCase();
-            return keywords.some((kw) => nameLower.includes(kw.toLowerCase()) || codeLower.includes(kw.toLowerCase()));
-        }) || null;
-    };
-
-    const handleSelectCategory = (cat: 'two_wheeler' | 'three_wheeler' | 'truck') => {
-        setSelectedCategory(cat);
-        if (cat === 'two_wheeler') {
-            const vt = findVehicleTypeByKeywords(['two wheeler', '2-wheeler', 'scooter', 'veh001']);
-            setFormData((prev) => ({
-                ...prev,
-                vehicle: vt ? String(vt.id) : (vehicleTypes.length > 0 ? String(vehicleTypes[0].id) : ''),
-                ctBodyType: '',
-                ctTyreType: ''
-            }));
-        } else if (cat === 'three_wheeler') {
-            const vt = findVehicleTypeByKeywords(['three wheeler', '3-wheeler', 'auto', 'veh002']);
-            setFormData((prev) => ({
-                ...prev,
-                vehicle: vt ? String(vt.id) : '',
-                ctBodyType: '',
-                ctTyreType: ''
-            }));
-        } else if (cat === 'truck') {
-            const defaultTruck = findVehicleTypeByKeywords(['mini truck', 'tata ace', 'veh003']);
-            if (defaultTruck) {
-                setFormData((prev) => ({ ...prev, vehicle: String(defaultTruck.id) }));
-            }
-        }
-    };
-
-    const handleSelectTruckSubtype = (truck: typeof TRUCK_SUBTYPES[0]) => {
-        const vt = findVehicleTypeByKeywords(truck.keywords);
-        if (vt) {
-            setFormData((prev) => ({ ...prev, vehicle: String(vt.id) }));
-        }
-    };
-
-    const getSelectedVehicleName = () => {
-        if (!formData.vehicle || !Array.isArray(vehicleTypes)) return '';
-        const match = vehicleTypes.find((vt) => String(vt.id) === String(formData.vehicle));
-        if (!match || !match.name) return '';
-        return match.name.replace(/^[\?\s\uFFFD]+/, '').replace(/^[^a-zA-Z0-9\s]+/, '').trim();
-    };
+        window.addEventListener('saved_addresses_updated', handleSyncSavedAddresses);
+        window.addEventListener('storage', handleSyncSavedAddresses);
+        return () => {
+            window.removeEventListener('saved_addresses_updated', handleSyncSavedAddresses);
+            window.removeEventListener('storage', handleSyncSavedAddresses);
+        };
+    }, []);
 
     useEffect(() => {
         const userStr = localStorage.getItem('user');
@@ -430,27 +229,6 @@ const CustomerDashboard = () => {
                             }
                         }
                     }
-
-                    if (n.message && (n.message.startsWith('RIDE_CANCELLED_BY_DRIVER|') || n.message.startsWith('RIDE_CANCELLED_BY_TRANSPORTER|'))) {
-                        if (!handledCancellationNotifIdsRef.current.has(n.id)) {
-                            handledCancellationNotifIdsRef.current.add(n.id);
-                            apiClient.post(`/Transport/markNotificationRead?notificationId=${n.id}`).catch(() => {});
-
-                            const parts = n.message.split('|');
-                            const bId = Number(parts[1]);
-                            const cancellerName = parts[2] || 'User';
-                            const role = n.message.startsWith('RIDE_CANCELLED_BY_DRIVER|') ? 'Driver' : 'Transporter';
-
-                            try {
-                                const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                                audio.volume = 0.8;
-                                audio.play().catch(() => {});
-                            } catch (e) {}
-
-                            alert(`Shipment #${bId} was cancelled by ${role} (${cancellerName}). Order is returned to request pool.`);
-                            loadShipments();
-                        }
-                    }
                 });
 
                 lastSeenNotifIdsRef.current = new Set(notifications.map((n: any) => n.id));
@@ -463,67 +241,10 @@ const CustomerDashboard = () => {
         return () => clearInterval(intervalId);
     }, [user]);
 
-    const loadShipments = async () => {
-        const customerUserId = user?.userId || user?.UserId || user?.id || '';
-        if (!customerUserId) return;
-
-        try {
-            const res = await apiClient.post('/Vehicle/bookingVehiclerides', null, {
-                params: { userId: customerUserId },
-            });
-            const data = Array.isArray(res.data) ? res.data : [];
-            const normalized = data
-                .filter((item) => item?.Id || item?.id)
-                .map((item) => {
-                    const rawStatus = item.rideStatus ?? item.RideStatus;
-                    const statusCode = Number(item.cT_BookingStatus ?? item.CT_BookingStatus ?? item.bookingStatus ?? item.BookingStatus);
-                    let resolvedStatus: RideStatus = 'request_for_ride';
-                    if (typeof rawStatus === 'string' && rawStatus.trim() !== '') {
-                        resolvedStatus = rawStatus.trim().toLowerCase() as RideStatus;
-                    } else if (statusCode === 5) {
-                        resolvedStatus = 'ride_completed';
-                    } else if (statusCode === 6) {
-                        resolvedStatus = 'cancelled';
-                    } else if (statusCode === 4) {
-                        resolvedStatus = 'ride_started';
-                    } else if (statusCode === 3) {
-                        resolvedStatus = 'driver_arriving';
-                    } else if (statusCode === 2) {
-                        resolvedStatus = 'driver_assigned';
-                    }
-
-                    return {
-                        id: Number(item.id ?? item.Id),
-                        productType: item.goodsType ?? item.GoodsType ?? 'Goods',
-                        pickup: item.pickupAddress ?? item.PickupAddress ?? '',
-                        destination: item.dropAddress ?? item.DropAddress ?? '',
-                        weight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
-                        vehicle: item.vehicleNumber ?? item.VehicleNumber ?? 'Assigned vehicle',
-                        matchedCount: 0,
-                        status: resolvedStatus,
-                        date: item.createdAt ?? item.CreatedAt ?? '',
-                        driverName: item.driverName ?? item.DriverName ?? '',
-                        driverPhone: item.driverPhone ?? item.DriverPhone ?? '',
-                        driverUserId: item.driverUserId ?? item.DriverUserId ?? '',
-                        vehicleNumber: item.vehicleNumber ?? item.VehicleNumber ?? '',
-                        vehicleName: item.vehicleName ?? item.VehicleName ?? '',
-                        pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
-                        pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
-                        dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
-                        dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
-                        estimatedFare: Number(item.estimatedFare ?? item.EstimatedFare ?? 0),
-                    };
-                });
-
-            normalized.sort((a, b) => b.id - a.id);
-            setShipments(normalized);
-        } catch (err) {
-            console.error('Failed to load shipments:', err);
-        }
-    };
-
     useEffect(() => {
         const loadInitialData = async () => {
+            const customerUserId = user?.userId || user?.UserId || user?.id || '';
+            
             // Load common types from backend helper
             try {
                 const [masterData, prodRes] = await Promise.all([
@@ -538,23 +259,55 @@ const CustomerDashboard = () => {
                 console.error('Failed to load vehicle common types', err);
             }
 
-            await loadShipments();
+            if (!customerUserId) {
+                return;
+            }
+
+            try {
+                const res = await apiClient.post('/Vehicle/bookingVehiclerides', null, {
+                    params: { userId: customerUserId },
+                });
+                const data = Array.isArray(res.data) ? res.data : [];
+                const normalized = data
+                    .filter((item) => item?.Id || item?.id)
+                    .map((item) => {
+                        const rawType = item.goodsType ?? item.GoodsType ?? 'Goods';
+                        const isTons = rawType.includes('[Unit: Tons]');
+                        const cleanProductType = rawType.replace(/\s*\[Unit:\s*Tons\]/gi, '').trim() || 'Goods';
+                        return {
+                            id: Number(item.id ?? item.Id),
+                            productType: cleanProductType,
+                            pickup: item.pickupAddress ?? item.PickupAddress ?? '',
+                            destination: item.dropAddress ?? item.DropAddress ?? '',
+                            weight: Number(item.goodsWeight ?? item.GoodsWeight ?? 0),
+                            weightUnit: isTons ? 'Tons' : 'kg',
+                            vehicle: item.vehicleNumber ?? item.VehicleNumber ?? 'Assigned vehicle',
+                            matchedCount: 0,
+                            status: (item.rideStatus ?? item.RideStatus ?? 'request_for_ride') as RideStatus,
+                            date: item.createdAt ?? item.CreatedAt ?? '',
+                            driverName: item.driverName ?? item.DriverName ?? '',
+                            driverPhone: item.driverPhone ?? item.DriverPhone ?? '',
+                            driverUserId: item.driverUserId ?? item.DriverUserId ?? '',
+                            driverProfilePic: item.driverProfilePic ?? item.DriverProfilePic ?? '',
+                            vehicleNumber: item.vehicleNumber ?? item.VehicleNumber ?? '',
+                            vehicleName: item.vehicleName ?? item.VehicleName ?? '',
+                            pickupLat: Number(item.pickupLat ?? item.PickupLat ?? 0),
+                            pickupLng: Number(item.pickupLng ?? item.PickupLng ?? 0),
+                            dropLat: Number(item.dropLat ?? item.DropLat ?? 0),
+                            dropLng: Number(item.dropLng ?? item.DropLng ?? 0),
+                            estimatedFare: Number(item.estimatedFare ?? item.EstimatedFare ?? 0),
+                        };
+                    });
+
+                setShipments(normalized);
+
+            } catch (err) {
+                console.error(err);
+            }
         };
 
         loadInitialData();
     }, [user]);
-
-    // Poll active shipments for updates (cancellations, driver updates) every 5 seconds
-    useEffect(() => {
-        const activeShipments = shipments.filter(s => ['driver_assigned', 'driver_arriving', 'ride_started'].includes(s.status));
-        if (activeShipments.length === 0) return;
-
-        const intervalId = setInterval(() => {
-            loadShipments();
-        }, 5000);
-
-        return () => clearInterval(intervalId);
-    }, [shipments]);
 
     useEffect(() => {
         const tab = searchParams.get('tab');
@@ -568,7 +321,7 @@ const CustomerDashboard = () => {
             return;
         }
         try {
-            await apiClient.patch(`/Vehicle/${bookingId}/rideStatus`, null, { params: { status: 'cancelled', cancelledBy: 'Customer' } });
+            await apiClient.patch(`/Vehicle/${bookingId}/rideStatus`, null, { params: { status: 'cancelled' } });
             setSearchingBookingId(null);
             setShipments((prev) => prev.map((s) => s.id === bookingId ? { ...s, status: 'cancelled' } : s));
             alert('Search cancelled successfully.');
@@ -674,13 +427,7 @@ const CustomerDashboard = () => {
     };
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-        const { name, value } = e.target;
-        setFormData((prev) => ({ ...prev, [name]: value }));
-        if (name === 'pickup') {
-            fetchAddressSuggestions(value, 'pickup');
-        } else if (name === 'destination') {
-            fetchAddressSuggestions(value, 'destination');
-        }
+        setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
     };
 
     const handleCreateShipment = async (e: React.FormEvent) => {
@@ -693,8 +440,8 @@ const CustomerDashboard = () => {
             return;
         }
 
-        if (selectedCategory === 'two_wheeler' && parseNum(formData.weight) > 20) {
-            setErrorMessage('Maximum product weight for Two Wheeler is 20 kg. For heavier loads, please select 3 Wheeler Cargo or a Truck.');
+        if (selectedCategory === 'bike' && Number(formData.weight) > 20) {
+            setErrorMessage('2-Wheeler (Bike) shipment weight cannot exceed 20 kg.');
             setSubmitStatus('error');
             return;
         }
@@ -712,10 +459,12 @@ const CustomerDashboard = () => {
             // Use custom product type if "Other" is selected, otherwise use the selected product type
             const productListForSubmit = productTypes.length ? productTypes : FALLBACK_PRODUCT_TYPES;
             const selectedProduct = productListForSubmit.find((item) => String(item.id) === formData.productType);
-            const finalProductType =
+            const baseProductType =
                 formData.productType === 'Other'
                     ? formData.customProductType
                     : selectedProduct?.name ?? formData.productType;
+
+            const finalProductType = formData.weightUnit === 'Tons' ? `${baseProductType} [Unit: Tons]` : baseProductType;
 
             const finalPickupAddress = [
                 formData.pickupHouseNo ? `H.No: ${formData.pickupHouseNo}` : '',
@@ -762,10 +511,11 @@ const CustomerDashboard = () => {
 
             const newShipment: Shipment = {
                 id: bookingId,
-                productType: finalProductType,
+                productType: baseProductType,
                 pickup: formData.pickup,
                 destination: formData.destination,
                 weight: parseNum(formData.weight),
+                weightUnit: formData.weightUnit,
                 vehicle: vehicleName,
                 matchedCount,
                 status: 'request_for_ride',
@@ -789,6 +539,7 @@ const CustomerDashboard = () => {
                 dropLat: '',
                 dropLng: '',
                 weight: '',
+                weightUnit: 'kg',
                 vehicle: '',
                 ctBodyType: '',
                 ctTyreType: '',
@@ -818,6 +569,7 @@ const CustomerDashboard = () => {
                 dropLat: '',
                 dropLng: '',
                 weight: '',
+                weightUnit: 'kg',
                 vehicle: '',
                 ctBodyType: '',
                 ctTyreType: '',
@@ -894,90 +646,37 @@ const CustomerDashboard = () => {
 
     const reverseGeocode = async (lat: number, lng: number, field: 'pickup' | 'destination') => {
         try {
-            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`);
-            const data = await res.json();
-            if (data && data.display_name) {
-                setFormData(p => ({ ...p, [field]: data.display_name }));
+            const res = await apiClient.get(`/Location/reverse?lat=${lat}&lng=${lng}`);
+            const data = res.data || {};
+            if (data && data.displayName) {
+                setFormData(p => ({ ...p, [field]: data.displayName }));
             }
         } catch (err) {
             console.error("Reverse geocoding failed:", err);
         }
     };
 
-    const searchDebounceRef = useRef<any>(null);
-
-    const isWithinIndia = (lat: number, lng: number) => {
-        return lat >= 6.0 && lat <= 37.8 && lng >= 68.0 && lng <= 97.8;
-    };
-
     const forwardGeocode = async (address: string, field: 'pickup' | 'destination') => {
         if (!address || address.trim().length < 2) return;
-        const cleanAddress = address.trim();
         try {
-            // 1. Primary Nominatim search
-            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cleanAddress)}&limit=5&addressdetails=1`);
-            if (res.ok) {
-                const data = await res.json();
-                if (Array.isArray(data)) {
-                    const validItem = data.find((item: any) => isWithinIndia(parseFloat(item.lat), parseFloat(item.lon)));
-                    if (validItem) {
-                        const latStr = parseFloat(validItem.lat).toFixed(6);
-                        const lngStr = parseFloat(validItem.lon).toFixed(6);
-                        if (field === 'pickup') {
-                            setFormData(p => ({ ...p, pickup: validItem.display_name || cleanAddress, pickupLat: latStr, pickupLng: lngStr }));
-                        } else {
-                            setFormData(p => ({ ...p, destination: validItem.display_name || cleanAddress, dropLat: latStr, dropLng: lngStr }));
-                        }
-                        setActiveMapFocus(field);
-                        return;
-                    }
-                }
-            }
+            const res = await apiClient.get(`/Location/search?q=${encodeURIComponent(address)}`);
+            const data = Array.isArray(res.data) ? res.data : [];
+            if (data && data.length > 0) {
+                const item = data[0];
+                const latStr = String(item.lat || item.Lat);
+                const lngStr = String(item.lon || item.Lon);
+                const latNum = Number(latStr);
+                const lngNum = Number(lngStr);
 
-            // 2. Retry Nominatim with explicit India suffix if not present
-            if (!cleanAddress.toLowerCase().includes('india')) {
-                const resIndia = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cleanAddress + ', India')}&limit=5&addressdetails=1`);
-                if (resIndia.ok) {
-                    const dataIndia = await resIndia.json();
-                    if (Array.isArray(dataIndia)) {
-                        const validItem = dataIndia.find((item: any) => isWithinIndia(parseFloat(item.lat), parseFloat(item.lon)));
-                        if (validItem) {
-                            const latStr = parseFloat(validItem.lat).toFixed(6);
-                            const lngStr = parseFloat(validItem.lon).toFixed(6);
-                            if (field === 'pickup') {
-                                setFormData(p => ({ ...p, pickup: validItem.display_name || cleanAddress, pickupLat: latStr, pickupLng: lngStr }));
-                            } else {
-                                setFormData(p => ({ ...p, destination: validItem.display_name || cleanAddress, dropLat: latStr, dropLng: lngStr }));
-                            }
-                            setActiveMapFocus(field);
-                            return;
-                        }
-                    }
+                if (field === 'pickup') {
+                    setFormData(p => ({ ...p, pickupLat: latStr, pickupLng: lngStr }));
+                } else {
+                    setFormData(p => ({ ...p, dropLat: latStr, dropLng: lngStr }));
                 }
-            }
 
-            // 3. Fallback to Photon API
-            const photonRes = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(cleanAddress)}&limit=8`);
-            if (photonRes.ok) {
-                const photonData = await photonRes.json();
-                if (photonData?.features && photonData.features.length > 0) {
-                    const validFeature = photonData.features.find((f: any) => {
-                        const coords = f.geometry?.coordinates;
-                        return coords && coords.length >= 2 && isWithinIndia(coords[1], coords[0]);
-                    });
-                    if (validFeature) {
-                        const coords = validFeature.geometry.coordinates;
-                        const props = validFeature.properties || {};
-                        const placeName = [props.name, props.district || props.city, props.state, 'India'].filter(Boolean).join(', ');
-                        const latStr = parseFloat(coords[1]).toFixed(6);
-                        const lngStr = parseFloat(coords[0]).toFixed(6);
-                        if (field === 'pickup') {
-                            setFormData(p => ({ ...p, pickup: placeName || cleanAddress, pickupLat: latStr, pickupLng: lngStr }));
-                        } else {
-                            setFormData(p => ({ ...p, destination: placeName || cleanAddress, dropLat: latStr, dropLng: lngStr }));
-                        }
-                        setActiveMapFocus(field);
-                    }
+                if (Number.isFinite(latNum) && Number.isFinite(lngNum)) {
+                    setMapCenter([latNum, lngNum]);
+                    setMapZoom(16);
                 }
             }
         } catch (err) {
@@ -985,13 +684,33 @@ const CustomerDashboard = () => {
         }
     };
 
-    const useCurrentLocation = (field: 'pickup' | 'destination') => {
+    const fetchLocationSuggestions = async (query: string, field: 'pickup' | 'destination') => {
+        if (!query || query.trim().length < 2) {
+            if (field === 'pickup') setPickupSuggestions([]);
+            else setDropSuggestions([]);
+            return;
+        }
+
+        try {
+            const res = await apiClient.get(`/Location/search?q=${encodeURIComponent(query)}`);
+            const results = Array.isArray(res.data) ? res.data : [];
+            if (field === 'pickup') {
+                setPickupSuggestions(results);
+                setShowPickupSuggestions(true);
+            } else {
+                setDropSuggestions(results);
+                setShowDropSuggestions(true);
+            }
+        } catch (err) {
+            console.error("Failed to fetch address suggestions:", err);
+        }
+    };
+
+    const handleUseCurrentLocation = (field: 'pickup' | 'destination') => {
         if (!navigator.geolocation) {
             alert("Geolocation is not supported by your browser.");
             return;
         }
-
-        setLocatingField(field);
 
         navigator.geolocation.getCurrentPosition(
             async (position) => {
@@ -1001,161 +720,22 @@ const CustomerDashboard = () => {
                 const lngStr = lng.toFixed(6);
 
                 if (field === 'pickup') {
-                    setFormData(p => ({
-                        ...p,
-                        pickupLat: latStr,
-                        pickupLng: lngStr,
-                        pickup: 'Detecting live location...'
-                    }));
+                    setFormData(p => ({ ...p, pickupLat: latStr, pickupLng: lngStr }));
                 } else {
-                    setFormData(p => ({
-                        ...p,
-                        dropLat: latStr,
-                        dropLng: lngStr,
-                        destination: 'Detecting live location...'
-                    }));
+                    setFormData(p => ({ ...p, dropLat: latStr, dropLng: lngStr }));
                 }
 
-                try {
-                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`);
-                    const data = await res.json();
-                    const addressName = (data && data.display_name) 
-                        ? data.display_name 
-                        : `Live Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+                setMapCenter([lat, lng]);
+                setMapZoom(16);
 
-                    if (field === 'pickup') {
-                        setFormData(p => ({ ...p, pickup: addressName, pickupLat: latStr, pickupLng: lngStr }));
-                    } else {
-                        setFormData(p => ({ ...p, destination: addressName, dropLat: latStr, dropLng: lngStr }));
-                    }
-                    setActiveMapFocus(field);
-                } catch (err) {
-                    console.error("Failed to reverse geocode current location:", err);
-                    const fallbackName = `Live Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
-                    if (field === 'pickup') {
-                        setFormData(p => ({ ...p, pickup: fallbackName, pickupLat: latStr, pickupLng: lngStr }));
-                    } else {
-                        setFormData(p => ({ ...p, destination: fallbackName, dropLat: latStr, dropLng: lngStr }));
-                    }
-                } finally {
-                    setLocatingField(null);
-                }
+                await reverseGeocode(lat, lng, field);
             },
             (error) => {
-                console.error("Geolocation error:", error);
-                alert("Unable to fetch your live location. Please allow location permissions in your browser.");
-                setLocatingField(null);
+                console.error("Error obtaining geolocation:", error);
+                alert("Could not obtain your current GPS location. Please check location permissions.");
             },
             { enableHighAccuracy: true, timeout: 10000 }
         );
-    };
-
-    const fetchAddressSuggestions = (query: string, field: 'pickup' | 'destination') => {
-        if (searchDebounceRef.current) {
-            clearTimeout(searchDebounceRef.current);
-        }
-
-        if (!query || query.trim().length < 2) {
-            if (field === 'pickup') {
-                setPickupSuggestions([]);
-                setShowPickupSuggestions(false);
-            } else {
-                setDropSuggestions([]);
-                setShowDropSuggestions(false);
-            }
-            return;
-        }
-
-        const cleanQuery = query.trim();
-
-        searchDebounceRef.current = setTimeout(async () => {
-            try {
-                // 1. Search OpenStreetMap Nominatim
-                let nomRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cleanQuery)}&limit=8&addressdetails=1`);
-                let nomData = nomRes.ok ? await nomRes.json() : [];
-
-                if ((!Array.isArray(nomData) || nomData.length === 0) && !cleanQuery.toLowerCase().includes('india')) {
-                    const fallbackRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cleanQuery + ', India')}&limit=8&addressdetails=1`);
-                    if (fallbackRes.ok) {
-                        nomData = await fallbackRes.json();
-                    }
-                }
-
-                if (Array.isArray(nomData) && nomData.length > 0) {
-                    const items = nomData
-                        .filter((item: any) => isWithinIndia(parseFloat(item.lat), parseFloat(item.lon)))
-                        .map((item: any) => ({
-                            display_name: item.display_name,
-                            lat: item.lat,
-                            lon: item.lon,
-                        }));
-
-                    if (items.length > 0) {
-                        if (field === 'pickup') {
-                            setPickupSuggestions(items);
-                            setShowPickupSuggestions(true);
-                        } else {
-                            setDropSuggestions(items);
-                            setShowDropSuggestions(true);
-                        }
-                        return;
-                    }
-                }
-
-                // 2. Photon API Fallback
-                const photonRes = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(cleanQuery)}&limit=8`);
-                if (photonRes.ok) {
-                    const photonData = await photonRes.json();
-                    if (photonData?.features && Array.isArray(photonData.features) && photonData.features.length > 0) {
-                        const items = photonData.features
-                            .filter((f: any) => {
-                                const coords = f.geometry?.coordinates;
-                                return coords && coords.length >= 2 && isWithinIndia(coords[1], coords[0]);
-                            })
-                            .map((f: any) => {
-                                const props = f.properties || {};
-                                const coords = f.geometry?.coordinates || [77.2090, 28.6139];
-                                const villageOrName = props.name || cleanQuery;
-                                const districtOrCity = props.district || props.city || props.county || '';
-                                const state = props.state || '';
-                                const formatted = [villageOrName, districtOrCity, state, 'India'].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(', ');
-                                return {
-                                    display_name: formatted,
-                                    lat: coords[1],
-                                    lon: coords[0],
-                                };
-                            });
-
-                        if (items.length > 0) {
-                            if (field === 'pickup') {
-                                setPickupSuggestions(items);
-                                setShowPickupSuggestions(true);
-                            } else {
-                                setDropSuggestions(items);
-                                setShowDropSuggestions(true);
-                            }
-                        }
-                    }
-                }
-            } catch (err) {
-                console.error("Failed to fetch address suggestions:", err);
-            }
-        }, 250);
-    };
-
-    const handleSelectSuggestion = (item: any, field: 'pickup' | 'destination') => {
-        const latStr = parseFloat(item.lat).toFixed(6);
-        const lngStr = parseFloat(item.lon).toFixed(6);
-        const addressName = item.display_name || item.name || '';
-
-        if (field === 'pickup') {
-            setFormData(p => ({ ...p, pickup: addressName, pickupLat: latStr, pickupLng: lngStr }));
-            setShowPickupSuggestions(false);
-        } else {
-            setFormData(p => ({ ...p, destination: addressName, dropLat: latStr, dropLng: lngStr }));
-            setShowDropSuggestions(false);
-        }
-        setActiveMapFocus(field);
     };
 
     const calculateLiveFare = () => {
@@ -1175,13 +755,6 @@ const CustomerDashboard = () => {
     };
 
     const productPicklist = productTypes.length ? productTypes : FALLBACK_PRODUCT_TYPES;
-
-    const isLiveShipment = (status: string) => {
-        const s = String(status || '').trim().toLowerCase();
-        return s === 'request_for_ride' || s === 'driver_assigned' || s === 'driver_arriving' || s === 'ride_started' || s === '1' || s === '2' || s === '3' || s === '4';
-    };
-    const activeShipments = shipments.filter(s => isLiveShipment(s.status));
-    const previousShipments = shipments.filter(s => !isLiveShipment(s.status));
 
     return (
         <>
@@ -1283,15 +856,30 @@ const CustomerDashboard = () => {
                             )}
                         </nav>
 
-                        <div onClick={() => navigate('/profile')} className="bg-slate-50 hover:bg-indigo-50/50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3 cursor-pointer transition-all">
-                            <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
-                                {(user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'C').toUpperCase()}
+                        <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shrink-0">
+                                {user?.profilePic || user?.ProfilePic ? (
+                                    <img 
+                                        src={
+                                            (user.profilePic || user.ProfilePic).startsWith('http') || (user.profilePic || user.ProfilePic).startsWith('data:')
+                                                ? (user.profilePic || user.ProfilePic)
+                                                : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${(user.profilePic || user.ProfilePic).startsWith('/') ? '' : '/'}${user.profilePic || user.ProfilePic}`
+                                        } 
+                                        alt="Customer" 
+                                        className="w-full h-full object-cover"
+                                        onError={(e) => {
+                                            (e.target as HTMLElement).style.display = 'none';
+                                        }}
+                                    />
+                                ) : (
+                                    <span>{user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'C'}</span>
+                                )}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-sm font-bold text-slate-900 truncate">{user?.firstName || user?.name || 'Customer'}</p>
                                 <p className="text-xs text-slate-500 truncate">CUSTOMER</p>
                             </div>
-                            <button onClick={(e) => { e.stopPropagation(); handleLogout(); }} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
+                            <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
                                 <LogOut className="h-4 w-4" />
                             </button>
                         </div>
@@ -1306,12 +894,88 @@ const CustomerDashboard = () => {
                             <Menu className="h-6 w-6 text-white" />
                         </button>
                         <span className="font-extrabold tracking-tight">Navgatix</span>
-                        <button onClick={() => navigate('/profile')} className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all">
-                            {(user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'C').toUpperCase()}
-                        </button>
+                        <div className="w-8 h-8 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm shrink-0">
+                            {user?.profilePic || user?.ProfilePic ? (
+                                <img 
+                                    src={
+                                        (user.profilePic || user.ProfilePic).startsWith('http') || (user.profilePic || user.ProfilePic).startsWith('data:')
+                                            ? (user.profilePic || user.ProfilePic)
+                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${(user.profilePic || user.ProfilePic).startsWith('/') ? '' : '/'}${user.profilePic || user.ProfilePic}`
+                                    } 
+                                    alt="Customer" 
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                        (e.target as HTMLElement).style.display = 'none';
+                                    }}
+                                />
+                            ) : (
+                                <span>{user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'C'}</span>
+                            )}
+                        </div>
                     </header>
 
-                    <div className="flex-1 p-6 md:p-8 max-w-7xl w-full mx-auto">
+                    <div className="flex-1 p-3 sm:p-6 md:p-8 max-w-7xl w-full mx-auto">
+                <div className="mb-8 overflow-hidden rounded-2xl sm:rounded-[2rem] bg-slate-900 text-white shadow-2xl shadow-slate-300/40">
+                    <div className="grid gap-6 p-5 sm:p-8 lg:grid-cols-[1.3fr_0.9fr] lg:p-10">
+                        <div>
+                            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3.5 py-1.5 text-xs sm:text-sm font-semibold text-primary-200">
+                                <Truck className="h-4 w-4" />
+                                Hii, {user?.firstName || user?.name || 'Customer'}
+                            </div>
+                            <h1 className="mt-4 text-2xl sm:text-4xl font-extrabold tracking-tight">Customer (Logistics) Dashboard</h1>
+                            <p className="mt-3 max-w-2xl text-sm sm:text-lg leading-relaxed text-slate-300">
+                                This page is dedicated to customers. Add a shipment request, choose the required vehicle, and track every active booking from one place.
+                            </p>
+                            <div className="mt-6 flex flex-wrap gap-3">
+                                <button
+                                    onClick={openNewShipment}
+                                    className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-5 py-2.5 sm:px-6 sm:py-3 text-sm sm:text-base font-semibold text-white shadow-lg shadow-primary-500/25 transition-colors hover:bg-primary-500"
+                                >
+                                    <Package className="h-4 w-4" />
+                                    Add Shipment
+                                </button>
+                                <button
+                                    onClick={openShipmentList}
+                                    className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-5 py-2.5 sm:px-6 sm:py-3 text-sm sm:text-base font-semibold text-white transition-colors hover:bg-white/10"
+                                >
+                                    <ClipboardList className="h-4 w-4" />
+                                    View Shipments
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="grid gap-3 grid-cols-1 sm:grid-cols-3 lg:grid-cols-1">
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5 backdrop-blur-sm">
+                                <p className="text-xs sm:text-sm font-medium text-slate-300">Active Requests</p>
+                                <p className="mt-1 sm:mt-2 text-2xl sm:text-3xl font-extrabold">{shipments.length}</p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5 backdrop-blur-sm">
+                                <p className="text-xs sm:text-sm font-medium text-slate-300">Required Details</p>
+                                <p className="mt-1 sm:mt-2 text-xs sm:text-lg font-bold">Product, vehicle, weight, location</p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5 backdrop-blur-sm">
+                                <p className="text-xs sm:text-sm font-medium text-slate-300">Route Scope</p>
+                                <p className="mt-1 sm:mt-2 text-xs sm:text-lg font-bold">Pickup and drop workflow</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="mb-8 flex flex-wrap items-center gap-3">
+                    <button
+                        onClick={openShipmentList}
+                        className={`rounded-xl px-5 py-3 font-semibold transition-colors ${activeTab === 'shipments' ? 'bg-slate-900 text-white' : 'border border-slate-300 bg-white text-slate-700 hover:border-slate-400'}`}
+                    >
+                        Shipment Overview
+                    </button>
+                    <button
+                        onClick={openNewShipment}
+                        className={`rounded-xl px-5 py-3 font-semibold transition-colors ${activeTab === 'new' ? 'bg-primary-600 text-white' : 'border border-slate-300 bg-white text-slate-700 hover:border-primary-300 hover:text-primary-700'}`}
+                    >
+                        Add Shipment
+                    </button>
+                </div>
+
                 {submitStatus === 'success' && (
                     <div className="mb-8 flex items-start gap-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
                         <div className="mt-0.5">
@@ -1334,17 +998,12 @@ const CustomerDashboard = () => {
                     <div className="col-span-1 lg:col-span-2">
                         {activeTab === 'shipments' ? (
                             <div>
-                                <h2 className="mb-6 flex items-center justify-between text-xl font-bold text-slate-800">
-                                    <span className="flex items-center gap-2">
-                                        <Search className="h-5 w-5 text-emerald-600" /> Active Shipments
-                                    </span>
-                                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">
-                                        {activeShipments.length} Live
-                                    </span>
+                                <h2 className="mb-6 flex items-center gap-2 text-xl font-bold text-slate-800">
+                                    <Search className="h-5 w-5 text-primary-600" /> Active Shipments
                                 </h2>
 
                                 {/* Prominent Active Shipment Hero Live Tracking Card */}
-                                {activeShipments.filter(s => ['driver_assigned', 'driver_arriving', 'ride_started'].includes(s.status)).map((activeShip) => (
+                                {shipments.filter(s => ['driver_assigned', 'driver_arriving', 'ride_started'].includes(s.status)).map((activeShip) => (
                                     <div key={activeShip.id} className="mb-8 rounded-3xl border border-indigo-150 bg-indigo-50/20 p-6 shadow-md border-t-4 border-t-indigo-600 animate-in fade-in slide-in-from-top duration-500">
                                         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-4">
                                             <div>
@@ -1363,30 +1022,6 @@ const CustomerDashboard = () => {
                                             </div>
                                         </div>
 
-                                        {shipmentMetrics[activeShip.id] && (
-                                            <div className="mb-6 bg-slate-900 text-white rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4 shadow-lg border border-indigo-500/30 animate-in fade-in duration-300">
-                                                <div className="flex items-center gap-3">
-                                                    <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-xl shrink-0 shadow-md">
-                                                        {shipmentMetrics[activeShip.id].phase === 'delivery' ? '📦' : '🚚'}
-                                                    </div>
-                                                    <div>
-                                                        <p className="text-[11px] font-bold text-indigo-300 uppercase tracking-widest">
-                                                            {shipmentMetrics[activeShip.id].phase === 'delivery' ? 'Live Progress: Goods En Route to Drop' : 'Live Progress: Driver En Route to Pickup'}
-                                                        </p>
-                                                        <p className="text-base font-extrabold text-white">
-                                                            {shipmentMetrics[activeShip.id].phase === 'delivery' 
-                                                                ? `${shipmentMetrics[activeShip.id].distanceKm} km from Drop Point` 
-                                                                : `Driver is ${shipmentMetrics[activeShip.id].distanceKm} km away from pickup`}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                                <div className="bg-emerald-500/20 border border-emerald-400/40 rounded-xl px-4 py-2 text-right">
-                                                    <p className="text-[10px] font-bold text-emerald-300 uppercase tracking-wider">Estimated Time</p>
-                                                    <p className="text-base font-black text-emerald-400">~{shipmentMetrics[activeShip.id].etaMins} mins</p>
-                                                </div>
-                                            </div>
-                                        )}
-
                                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                             <div className="lg:col-span-2 rounded-2xl overflow-hidden shadow-sm border border-slate-200">
                                                 <TrackingMap 
@@ -1395,22 +1030,33 @@ const CustomerDashboard = () => {
                                                     pickupLng={activeShip.pickupLng || 77.2090}
                                                     dropLat={activeShip.dropLat || 19.0760}
                                                     dropLng={activeShip.dropLng || 72.8777}
-                                                    rideStatus={activeShip.status}
-                                                    onMetricsUpdate={(m) => {
-                                                        setShipmentMetrics((prev) => ({ ...prev, [activeShip.id]: m }));
-                                                    }}
                                                 />
                                             </div>
 
                                             <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex flex-col justify-between">
                                                 <div className="space-y-4">
                                                     <div className="flex items-center gap-3">
-                                                        <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-700 text-lg uppercase shadow-sm">
-                                                            {activeShip.driverName?.substring(0, 2) || 'DR'}
+                                                        <div className="w-12 h-12 rounded-full overflow-hidden bg-gradient-to-br from-indigo-500 to-primary-600 flex items-center justify-center font-black text-white text-base uppercase shadow-md border-2 border-white ring-2 ring-primary-100 shrink-0">
+                                                            {activeShip.driverProfilePic ? (
+                                                                <img 
+                                                                    src={
+                                                                        activeShip.driverProfilePic.startsWith('http') || activeShip.driverProfilePic.startsWith('data:') 
+                                                                            ? activeShip.driverProfilePic 
+                                                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${activeShip.driverProfilePic.startsWith('/') ? '' : '/'}${activeShip.driverProfilePic}`
+                                                                    } 
+                                                                    alt={activeShip.driverName || 'Driver'} 
+                                                                    className="w-full h-full object-cover"
+                                                                    onError={(e) => {
+                                                                        (e.target as HTMLElement).style.display = 'none';
+                                                                    }}
+                                                                />
+                                                            ) : (
+                                                                <span>{activeShip.driverName?.substring(0, 2) || 'DR'}</span>
+                                                            )}
                                                         </div>
-                                                        <div>
-                                                            <p className="text-xs font-semibold text-slate-500 uppercase">Your Driver</p>
-                                                            <p className="font-bold text-slate-900 text-base">{activeShip.driverName || 'Assigned Driver'}</p>
+                                                        <div className="min-w-0">
+                                                            <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Active Driver</p>
+                                                            <p className="font-extrabold text-slate-900 text-base truncate">{activeShip.driverName || 'Assigned Driver'}</p>
                                                         </div>
                                                     </div>
 
@@ -1427,18 +1073,6 @@ const CustomerDashboard = () => {
                                                             <span className="text-slate-500">Estimated Fare:</span>
                                                             <span className="font-bold text-slate-800">Rs {activeShip.estimatedFare}</span>
                                                         </div>
-                                                        <div className="flex justify-between items-center border-t border-slate-100 pt-2 mt-2">
-                                                            <span className="text-slate-500 text-xs font-medium">Payment Status:</span>
-                                                            {activeShip.paymentStatus?.includes('Paid') ? (
-                                                                <span className="font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full text-xs">
-                                                                    ✓ {activeShip.paymentStatus}
-                                                                </span>
-                                                            ) : (
-                                                                <span className="font-semibold text-amber-700 bg-amber-50 border border-amber-200/80 px-2.5 py-0.5 rounded-full text-xs">
-                                                                    ⏳ Pending Driver Collection
-                                                                </span>
-                                                            )}
-                                                        </div>
                                                     </div>
                                                 </div>
 
@@ -1453,62 +1087,43 @@ const CustomerDashboard = () => {
                                                     )}
                                                     <button 
                                                         onClick={() => setChatBookingId(activeShip.id)}
-                                                        className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
+                                                        className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition-all flex items-center justify-center gap-2"
                                                     >
                                                         💬 Chat
                                                     </button>
                                                 </div>
-
-                                                {(activeShip.status === 'driver_assigned' || activeShip.status === 'driver_arriving') && (
-                                                    <button 
-                                                        onClick={async () => {
-                                                            if (window.confirm("Are you sure you want to cancel this ride?")) {
-                                                                try {
-                                                                    await apiClient.patch(`/Vehicle/${activeShip.id}/rideStatus`, null, { params: { status: 'cancelled', cancelledBy: 'Customer' } });
-                                                                    alert('Ride cancelled successfully.');
-                                                                    loadShipments();
-                                                                } catch (err) {
-                                                                    console.error("Failed to cancel ride:", err);
-                                                                }
-                                                            }
-                                                        }}
-                                                        className="w-full mt-3 py-2.5 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 font-bold text-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-                                                    >
-                                                        🚫 Cancel Ride
-                                                    </button>
-                                                )}
                                             </div>
                                         </div>
                                     </div>
                                 ))}
 
-                                {activeShipments.length === 0 ? (
-                                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-100/50 p-8 text-center text-slate-500 mb-10">
-                                        <p className="font-semibold text-slate-600">No active live shipments right now.</p>
+                                {shipments.length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-100/50 p-12 text-center text-slate-500">
+                                        <p>No active shipments found for this customer account yet.</p>
                                         <button
                                             onClick={openNewShipment}
-                                            className="mt-4 inline-flex items-center gap-2 rounded-xl bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-primary-500/25 transition-colors hover:bg-primary-500 cursor-pointer"
+                                            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-primary-600 px-5 py-3 font-semibold text-white shadow-lg shadow-primary-500/25 transition-colors hover:bg-primary-500"
                                         >
                                             <Package className="h-4 w-4" />
                                             Add Shipment
                                         </button>
                                     </div>
                                 ) : (
-                                    <div className="space-y-4 mb-10">
-                                        {activeShipments.map((shipment) => (
-                                            <div key={shipment.id} className="rounded-2xl border border-emerald-200/80 bg-white p-6 shadow-sm border-l-4 border-l-emerald-500">
+                                    <div className="space-y-4">
+                                        {shipments.map((shipment) => (
+                                            <div key={shipment.id} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                                 <div className="mb-4 flex items-start justify-between">
                                                     <div>
-                                                        <span className="rounded-lg border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-xs font-bold uppercase tracking-widest text-emerald-600">
+                                                        <span className="rounded-lg border border-primary-100 bg-primary-50 px-2.5 py-1 text-xs font-bold uppercase tracking-widest text-primary-600">
                                                             Ride #{shipment.id}
                                                         </span>
                                                         <h3 className="mt-3 font-bold text-slate-900">{shipment.vehicle}</h3>
                                                         <p className="mt-1 text-sm text-slate-500">
-                                                            {shipment.productType} | {shipment.weight} kg
+                                                            {shipment.productType} | {shipment.weight} {shipment.weightUnit || 'kg'} | Matched drivers: {shipment.matchedCount}
                                                         </p>
                                                     </div>
-                                                    <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 capitalize">
-                                                        {shipment.status?.replace(/_/g, ' ')}
+                                                    <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700">
+                                                        {shipment.status}
                                                     </span>
                                                 </div>
 
@@ -1522,6 +1137,7 @@ const CustomerDashboard = () => {
                                                     </div>
                                                 </div>
 
+
                                                 <div className="grid gap-3 md:grid-cols-3">
                                                     <input
                                                         value={disputeDrafts[shipment.id] || ''}
@@ -1532,13 +1148,13 @@ const CustomerDashboard = () => {
                                                     <div className="flex gap-2">
                                                         <button
                                                             onClick={() => reportDispute(shipment.id, 'reportComplaint')}
-                                                            className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold cursor-pointer"
+                                                            className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"
                                                         >
                                                             Complaint
                                                         </button>
                                                         <button
                                                             onClick={() => reportDispute(shipment.id, 'reportRideIssue')}
-                                                            className="flex-1 rounded-xl border border-red-300 px-3 py-2 text-sm font-semibold text-red-700 cursor-pointer"
+                                                            className="flex-1 rounded-xl border border-red-300 px-3 py-2 text-sm font-semibold text-red-700"
                                                         >
                                                             Ride Issue
                                                         </button>
@@ -1548,163 +1164,40 @@ const CustomerDashboard = () => {
                                                 {(shipment.status === 'ride_started' || shipment.status === 'driver_assigned' || shipment.status === 'driver_arriving') && (
                                                     <button
                                                         onClick={() => setTrackingBooking(shipment)}
-                                                        className="mt-4 w-full flex items-center justify-center gap-2 rounded-xl bg-primary-50 py-3 text-sm font-bold text-primary-700 hover:bg-primary-100 transition-colors cursor-pointer"
+                                                        className="mt-4 w-full flex items-center justify-center gap-2 rounded-xl bg-primary-50 py-3 text-sm font-bold text-primary-700 hover:bg-primary-100 transition-colors"
                                                     >
                                                         <Navigation className="h-4 w-4" />
                                                         Track Live Location
                                                     </button>
                                                 )}
-                                                
+                                                {/* Chat button – always visible once a shipment exists */}
                                                 <button
                                                     onClick={() => setChatBookingId(shipment.id)}
-                                                    className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+                                                    className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
                                                 >
                                                     <MessageCircle className="h-4 w-4 text-emerald-600" />
                                                     Chat with Driver
                                                 </button>
 
-                                                {(shipment.status === 'driver_assigned' || shipment.status === 'driver_arriving') && (
+                                                {shipment.status === 'ride_completed' && (
                                                     <button
-                                                        onClick={async () => {
-                                                            if (window.confirm("Are you sure you want to cancel this ride?")) {
-                                                                try {
-                                                                    await apiClient.patch(`/Vehicle/${shipment.id}/rideStatus`, null, { params: { status: 'cancelled' } });
-                                                                    alert('Ride cancelled successfully.');
-                                                                    loadShipments();
-                                                                } catch (err) {
-                                                                    console.error("Failed to cancel ride:", err);
-                                                                }
-                                                            }
+                                                        onClick={() => {
+                                                            setSelectedRatingBooking(shipment);
+                                                            setIsRatingModalOpen(true);
                                                         }}
-                                                        className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 py-3 text-sm font-bold text-red-700 transition-all cursor-pointer"
+                                                        className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-600 py-3 text-sm font-bold text-white shadow-md shadow-amber-500/10 transition-all cursor-pointer"
                                                     >
-                                                        🚫 Cancel Ride
+                                                        <Star className="h-4 w-4 fill-white" />
+                                                        Rate Driver
                                                     </button>
                                                 )}
                                             </div>
                                         ))}
                                     </div>
                                 )}
-
-                                {/* PREVIOUS SHIPMENTS SECTION */}
-                                <div className="mt-12 border-t border-slate-200 pt-8">
-                                    <div className="mb-6 flex items-center justify-between">
-                                        <h2 className="flex items-center gap-2 text-xl font-bold text-slate-800">
-                                            <History className="h-5 w-5 text-slate-500" /> Previous Shipments
-                                        </h2>
-                                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
-                                            {previousShipments.length} Previous
-                                        </span>
-                                    </div>
-
-                                    {previousShipments.length === 0 ? (
-                                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
-                                            <p className="font-medium text-slate-500">No previous shipments yet.</p>
-                                        </div>
-                                    ) : (
-                                        <div className="space-y-4">
-                                            {previousShipments.map((shipment) => (
-                                                <div key={shipment.id} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm opacity-95">
-                                                    <div className="mb-4 flex items-start justify-between">
-                                                        <div>
-                                                            <span className="rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs font-bold uppercase tracking-widest text-slate-600">
-                                                                Ride #{shipment.id}
-                                                            </span>
-                                                            <h3 className="mt-3 font-bold text-slate-900">{shipment.vehicle}</h3>
-                                                            <p className="mt-1 text-sm text-slate-500">
-                                                                {shipment.productType} | {shipment.weight} kg
-                                                            </p>
-                                                        </div>
-                                                        <span className={`rounded-lg px-3 py-1 text-sm font-semibold capitalize ${shipment.status === 'ride_completed' ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'border border-slate-200 bg-slate-100 text-slate-600'}`}>
-                                                            {shipment.status?.replace(/_/g, ' ')}
-                                                        </span>
-                                                    </div>
-
-                                                    <div className="mb-4 flex items-center gap-4 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm font-medium text-slate-600">
-                                                        <div className="flex items-center gap-2">
-                                                            <MapPin className="h-4 w-4 text-slate-400" /> {shipment.pickup}
-                                                        </div>
-                                                        <span className="text-slate-300">to</span>
-                                                        <div className="flex items-center gap-2">
-                                                            <Navigation className="h-4 w-4 text-slate-400" /> {shipment.destination}
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="grid gap-3 md:grid-cols-3">
-                                                        <input
-                                                            value={disputeDrafts[shipment.id] || ''}
-                                                            onChange={(e) => setDisputeDrafts((prev) => ({ ...prev, [shipment.id]: e.target.value }))}
-                                                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm md:col-span-2"
-                                                            placeholder="Report complaint or ride issue"
-                                                        />
-                                                        <div className="flex gap-2">
-                                                            <button
-                                                                onClick={() => reportDispute(shipment.id, 'reportComplaint')}
-                                                                className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold cursor-pointer"
-                                                            >
-                                                                Complaint
-                                                            </button>
-                                                            <button
-                                                                onClick={() => reportDispute(shipment.id, 'reportRideIssue')}
-                                                                className="flex-1 rounded-xl border border-red-300 px-3 py-2 text-sm font-semibold text-red-700 cursor-pointer"
-                                                            >
-                                                                Ride Issue
-                                                            </button>
-                                                        </div>
-                                                    </div>
-
-                                                    {shipment.status === 'ride_completed' && (
-                                                        <button
-                                                            onClick={() => {
-                                                                setSelectedRatingBooking(shipment);
-                                                                setIsRatingModalOpen(true);
-                                                            }}
-                                                            className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-600 py-3 text-sm font-bold text-white shadow-md shadow-amber-500/10 transition-all cursor-pointer"
-                                                        >
-                                                            <Star className="h-4 w-4 fill-white" />
-                                                            Rate Driver
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
                             </div>
                         ) : (
-                            <div className="space-y-8">
-                                {/* Dark Hero Header Banner for Home Tab */}
-                                <div className="mb-8 overflow-hidden rounded-[2rem] bg-slate-900 text-white shadow-2xl shadow-slate-300/40">
-                                    <div className="grid gap-8 px-8 py-10 lg:grid-cols-[1.3fr_0.9fr] lg:px-10">
-                                        <div>
-                                            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-primary-200">
-                                                <Truck className="h-4 w-4" />
-                                                Hii, {user?.firstName || user?.name || 'Customer'}
-                                            </div>
-                                            <h1 className="mt-5 text-3xl md:text-4xl font-extrabold tracking-tight">Customer (Logistics) Dashboard</h1>
-                                            <p className="mt-4 max-w-2xl text-sm md:text-lg leading-7 md:leading-8 text-slate-300">
-                                                This page is dedicated to customers. Add a shipment request, choose the required vehicle, and track every active booking from one place.
-                                            </p>
-                                        </div>
-
-                                        <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
-                                            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm">
-                                                <p className="text-sm font-medium text-slate-300">Active Requests</p>
-                                                <p className="mt-2 text-3xl font-extrabold">{activeShipments.length}</p>
-                                            </div>
-                                            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm">
-                                                <p className="text-sm font-medium text-slate-300">Required Details</p>
-                                                <p className="mt-2 text-lg font-bold">Product, vehicle, weight, location</p>
-                                            </div>
-                                            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm">
-                                                <p className="text-sm font-medium text-slate-300">Route Scope</p>
-                                                <p className="mt-2 text-lg font-bold">Pickup and drop workflow</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+                            <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
                                 <div className="mb-8 flex items-start justify-between gap-4">
                                     <div>
                                         <h2 className="flex items-center gap-2 text-2xl font-bold text-slate-900">
@@ -1719,15 +1212,146 @@ const CustomerDashboard = () => {
                                 </div>
 
                                 <form onSubmit={handleCreateShipment} className="space-y-6">
+                                    {/* Vehicle Category Selector: 2-Wheeler (Bike), 3-Wheeler (Auto/Rickshaw), Truck */}
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                                                Select Vehicle Category <span className="text-rose-500 font-semibold text-xs">(Required)</span>
+                                            </label>
+                                            <span className="text-xs text-slate-500 font-medium">Choose transport mode</span>
+                                        </div>
+                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                            {/* 2 Wheeler Option */}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedCategory('bike');
+                                                    const bikeMatch = vehicleTypes.find(v => 
+                                                        v.name.toLowerCase().includes('bike') || 
+                                                        v.name.toLowerCase().includes('two') || 
+                                                        v.name.toLowerCase().includes('scooter') ||
+                                                        v.name.toLowerCase().includes('2 wheeler') ||
+                                                        v.name.toLowerCase().includes('2-wheeler')
+                                                    );
+                                                    setFormData(prev => ({
+                                                        ...prev,
+                                                        vehicle: bikeMatch ? String(bikeMatch.id) : (vehicleTypes[0] ? String(vehicleTypes[0].id) : '1'),
+                                                        ctBodyType: '',
+                                                        ctTyreType: '',
+                                                        weight: Number(prev.weight) > 20 ? '20' : prev.weight
+                                                    }));
+                                                }}
+                                                className={`group relative flex flex-col items-center justify-between p-4 rounded-3xl border-2 transition-all duration-200 cursor-pointer overflow-hidden ${
+                                                    selectedCategory === 'bike'
+                                                        ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 shadow-lg shadow-emerald-500/10 ring-2 ring-emerald-500/30'
+                                                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50/80 shadow-sm'
+                                                }`}
+                                            >
+                                                <div className="w-full h-28 flex items-center justify-center p-2">
+                                                    <img 
+                                                        src="/assets/vehicles/2wheeler.png" 
+                                                        alt="2-Wheeler Courier Bike" 
+                                                        className="max-h-full max-w-full object-contain transition-transform duration-300 group-hover:scale-105"
+                                                    />
+                                                </div>
+                                                <div className="w-full text-center border-t border-slate-100/80 pt-2 mt-1">
+                                                    <span className="font-extrabold text-sm block text-slate-900">🏍️ 2-Wheeler</span>
+                                                    <span className="text-[11px] font-bold text-amber-700 bg-amber-100/80 px-2.5 py-0.5 rounded-full inline-block mt-1">
+                                                        Bike (Max 20 kg)
+                                                    </span>
+                                                </div>
+                                            </button>
+
+                                            {/* 3 Wheeler Option */}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedCategory('auto');
+                                                    const autoMatch = vehicleTypes.find(v => 
+                                                        v.name.toLowerCase().includes('auto') || 
+                                                        v.name.toLowerCase().includes('three') || 
+                                                        v.name.toLowerCase().includes('rickshaw') ||
+                                                        v.name.toLowerCase().includes('3 wheeler') ||
+                                                        v.name.toLowerCase().includes('3-wheeler') ||
+                                                        v.name.toLowerCase().includes('ape')
+                                                    );
+                                                    setFormData(prev => ({
+                                                        ...prev,
+                                                        vehicle: autoMatch ? String(autoMatch.id) : (vehicleTypes[0] ? String(vehicleTypes[0].id) : '1'),
+                                                        ctBodyType: '',
+                                                        ctTyreType: '',
+                                                    }));
+                                                }}
+                                                className={`group relative flex flex-col items-center justify-between p-4 rounded-3xl border-2 transition-all duration-200 cursor-pointer overflow-hidden ${
+                                                    selectedCategory === 'auto'
+                                                        ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 shadow-lg shadow-emerald-500/10 ring-2 ring-emerald-500/30'
+                                                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50/80 shadow-sm'
+                                                }`}
+                                            >
+                                                <div className="w-full h-28 flex items-center justify-center p-2">
+                                                    <img 
+                                                        src="/assets/vehicles/3wheeler.png" 
+                                                        alt="3-Wheeler Auto Cargo" 
+                                                        className="max-h-full max-w-full object-contain transition-transform duration-300 group-hover:scale-105"
+                                                    />
+                                                </div>
+                                                <div className="w-full text-center border-t border-slate-100/80 pt-2 mt-1">
+                                                    <span className="font-extrabold text-sm block text-slate-900">🛺 3-Wheeler</span>
+                                                    <span className="text-[11px] font-semibold text-slate-500 inline-block mt-1">
+                                                        Auto / Cargo Loader
+                                                    </span>
+                                                </div>
+                                            </button>
+
+                                            {/* Truck Option */}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedCategory('truck');
+                                                    const truckMatch = vehicleTypes.find(v => 
+                                                        v.name.toLowerCase().includes('mini truck') ||
+                                                        v.name.toLowerCase().includes('tata ace') ||
+                                                        v.name.toLowerCase().includes('pickup') ||
+                                                        v.name.toLowerCase().includes('truck')
+                                                    );
+                                                    setFormData(prev => ({
+                                                        ...prev,
+                                                        vehicle: truckMatch ? String(truckMatch.id) : (vehicleTypes[0] ? String(vehicleTypes[0].id) : ''),
+                                                    }));
+                                                }}
+                                                className={`group relative flex flex-col items-center justify-between p-4 rounded-3xl border-2 transition-all duration-200 cursor-pointer overflow-hidden ${
+                                                    selectedCategory === 'truck'
+                                                        ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 shadow-lg shadow-emerald-500/10 ring-2 ring-emerald-500/30'
+                                                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50/80 shadow-sm'
+                                                }`}
+                                            >
+                                                <div className="w-full h-28 flex items-center justify-center p-2">
+                                                    <img 
+                                                        src="/assets/vehicles/truck.png" 
+                                                        alt="Truck and Heavy Lorries" 
+                                                        className="max-h-full max-w-full object-contain transition-transform duration-300 group-hover:scale-105"
+                                                    />
+                                                </div>
+                                                <div className="w-full text-center border-t border-slate-100/80 pt-2 mt-1">
+                                                    <span className="font-extrabold text-sm block text-slate-900">🚚 Truck / Commercial</span>
+                                                    <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-100/80 px-2.5 py-0.5 rounded-full inline-block mt-1">
+                                                        Mini / Open / 14 Ft+
+                                                    </span>
+                                                </div>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Product Type Selection */}
                                     <div className="grid gap-4 md:grid-cols-2">
                                         <div>
-                                            <label className="mb-2 block text-sm font-semibold text-slate-700">Product Type</label>
+                                            <label className="mb-2 block text-sm font-bold text-slate-800">Product / Cargo Type</label>
                                             <select
                                                 required
                                                 name="productType"
                                                 value={formData.productType}
                                                 onChange={handleChange}
-                                                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3"
+                                                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-slate-800 font-medium focus:ring-2 focus:ring-primary-500 outline-none"
                                             >
                                                 <option value="">-- Select Product Type --</option>
                                                 {productPicklist.map((product) => (
@@ -1735,7 +1359,7 @@ const CustomerDashboard = () => {
                                                         {product.name}
                                                     </option>
                                                 ))}
-                                                <option value="Other">Other</option>
+                                                <option value="Other">Other (Custom Cargo)</option>
                                             </select>
                                             {formData.productType === 'Other' && (
                                                 <input
@@ -1744,490 +1368,601 @@ const CustomerDashboard = () => {
                                                     value={formData.customProductType}
                                                     onChange={handleChange}
                                                     placeholder="Please specify your product type..."
-                                                    className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3"
+                                                    className="mt-2 w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none"
                                                     required
                                                 />
                                             )}
                                         </div>
-                                    </div>
 
-                                    {/* 3 Visual Vehicle Category Selector Cards */}
-                                    <div className="col-span-full space-y-3">
-                                        <label className="flex items-center justify-between text-sm font-extrabold text-slate-800">
-                                            <span className="flex items-center gap-2">
-                                                <Truck className="h-4 w-4 text-primary-600" /> Select Vehicle Category <span className="text-rose-500 font-bold text-xs">(Required)</span>
-                                            </span>
-                                            {formData.vehicle && (
-                                                <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-300 px-3 py-1 rounded-full flex items-center gap-1 shadow-sm">
-                                                    ✓ Selected: {getSelectedVehicleName()}
+                                        {selectedCategory !== 'truck' && (
+                                            <div className="flex flex-col justify-center rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
+                                                <span className="text-[11px] font-extrabold text-emerald-800 uppercase tracking-wider">
+                                                    Active Dispatch Scope
                                                 </span>
-                                            )}
-                                        </label>
-
-                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                            {/* Card 1: Two Wheeler */}
-                                            <button
-                                                type="button"
-                                                onClick={() => handleSelectCategory('two_wheeler')}
-                                                className={`group relative p-4 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between ${
-                                                    selectedCategory === 'two_wheeler'
-                                                        ? 'border-primary-600 bg-gradient-to-br from-primary-50 to-indigo-50/80 shadow-md ring-2 ring-primary-500/20'
-                                                        : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
-                                                }`}
-                                            >
-                                                <div className="flex items-center justify-between mb-2">
-                                                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 group-hover:text-primary-600">Quick Parcel</span>
-                                                    <span className={`w-5 h-5 rounded-full border flex items-center justify-center text-[10px] ${
-                                                        selectedCategory === 'two_wheeler' ? 'bg-primary-600 text-white border-primary-600 font-bold' : 'border-slate-300'
-                                                    }`}>
-                                                        {selectedCategory === 'two_wheeler' ? '✓' : ''}
-                                                    </span>
-                                                </div>
-                                                <div className="h-28 flex items-center justify-center py-1">
-                                                    <img src={scooterImg} alt="Two Wheeler" className="max-h-full max-w-full object-contain transform group-hover:scale-105 transition-transform duration-300" />
-                                                </div>
-                                                <div className="mt-2">
-                                                    <h4 className="font-extrabold text-slate-900 text-base">Two Wheeler</h4>
-                                                    <p className="text-xs text-slate-500 mt-0.5">Quick local delivery & parcels</p>
-                                                </div>
-                                            </button>
-
-                                            {/* Card 2: Three Wheeler Cargo */}
-                                            <button
-                                                type="button"
-                                                onClick={() => handleSelectCategory('three_wheeler')}
-                                                className={`group relative p-4 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between ${
-                                                    selectedCategory === 'three_wheeler'
-                                                        ? 'border-primary-600 bg-gradient-to-br from-primary-50 to-indigo-50/80 shadow-md ring-2 ring-primary-500/20'
-                                                        : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
-                                                }`}
-                                            >
-                                                <div className="flex items-center justify-between mb-2">
-                                                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 group-hover:text-primary-600">Light Cargo</span>
-                                                    <span className={`w-5 h-5 rounded-full border flex items-center justify-center text-[10px] ${
-                                                        selectedCategory === 'three_wheeler' ? 'bg-primary-600 text-white border-primary-600 font-bold' : 'border-slate-300'
-                                                    }`}>
-                                                        {selectedCategory === 'three_wheeler' ? '✓' : ''}
-                                                    </span>
-                                                </div>
-                                                <div className="h-28 flex items-center justify-center py-1">
-                                                    <img src={autoImg} alt="Three Wheeler Cargo" className="max-h-full max-w-full object-contain transform group-hover:scale-105 transition-transform duration-300" />
-                                                </div>
-                                                <div className="mt-2">
-                                                    <h4 className="font-extrabold text-slate-900 text-base">3 Wheeler Cargo</h4>
-                                                    <p className="text-xs text-slate-500 mt-0.5">Auto rickshaw cargo for light loads</p>
-                                                </div>
-                                            </button>
-
-                                            {/* Card 3: Trucks / Heavy Vehicles */}
-                                            <button
-                                                type="button"
-                                                onClick={() => handleSelectCategory('truck')}
-                                                className={`group relative p-4 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between ${
-                                                    selectedCategory === 'truck'
-                                                        ? 'border-primary-600 bg-gradient-to-br from-primary-50 to-indigo-50/80 shadow-md ring-2 ring-primary-500/20'
-                                                        : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
-                                                }`}
-                                            >
-                                                <div className="flex items-center justify-between mb-2">
-                                                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 group-hover:text-primary-600">Heavy Freight</span>
-                                                    <span className={`w-5 h-5 rounded-full border flex items-center justify-center text-[10px] ${
-                                                        selectedCategory === 'truck' ? 'bg-primary-600 text-white border-primary-600 font-bold' : 'border-slate-300'
-                                                    }`}>
-                                                        {selectedCategory === 'truck' ? '✓' : ''}
-                                                    </span>
-                                                </div>
-                                                <div className="h-28 flex items-center justify-center py-1">
-                                                    <img src={truckImg} alt="Trucks / Heavy Vehicles" className="max-h-full max-w-full object-contain transform group-hover:scale-105 transition-transform duration-300" />
-                                                </div>
-                                                <div className="mt-2">
-                                                    <h4 className="font-extrabold text-slate-900 text-base">Trucks / Heavy Vehicles</h4>
-                                                    <p className="text-xs text-slate-500 mt-0.5">Mini truck, LCV, 14ft-32ft & Container</p>
-                                                </div>
-                                            </button>
-                                        </div>
-
-                                        {/* Truck Sub-options Grid */}
-                                        {selectedCategory === 'truck' && (
-                                            <div className="mt-4 p-5 bg-slate-100/80 border border-slate-200 rounded-2xl space-y-3 animate-in fade-in duration-300">
-                                                <p className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                                                    🚚 Select Specific Truck Type:
+                                                <p className="text-sm font-bold text-slate-900 mt-1">
+                                                    {selectedCategory === 'bike' ? '🏍️ Direct 2-Wheeler Delivery' : '🛺 Direct 3-Wheeler Auto Cargo'}
                                                 </p>
-                                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                                                    {TRUCK_SUBTYPES.map((truck) => {
-                                                        const matchedVt = findVehicleTypeByKeywords(truck.keywords);
-                                                        const vtIdStr = matchedVt ? String(matchedVt.id) : '';
-                                                        const isSelected = formData.vehicle === vtIdStr;
-
-                                                        return (
-                                                            <button
-                                                                key={truck.key}
-                                                                type="button"
-                                                                onClick={() => handleSelectTruckSubtype(truck)}
-                                                                className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between min-h-[70px] ${
-                                                                    isSelected
-                                                                        ? 'border-primary-600 bg-white text-primary-900 shadow-md ring-2 ring-primary-500/30 font-bold'
-                                                                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
-                                                                }`}
-                                                            >
-                                                                <div className="flex items-center justify-between w-full mb-1">
-                                                                    <span className="text-lg">{truck.icon}</span>
-                                                                    {isSelected && <span className="text-xs text-primary-600 font-black">✓</span>}
-                                                                </div>
-                                                                <span className="text-xs font-bold text-slate-800 leading-snug">{truck.label}</span>
-                                                            </button>
-                                                        );
-                                                    })}
-                                                </div>
+                                                <p className="text-xs text-slate-600 mt-0.5">
+                                                    {selectedCategory === 'bike' ? 'Fast city courier for documents & small packages up to 20 kg.' : 'Standard local goods & commercial cargo transport.'}
+                                                </p>
                                             </div>
                                         )}
-
-                                        {/* Hidden input to guarantee native form validation compatibility */}
-                                        <input type="hidden" name="vehicle" value={formData.vehicle} required />
                                     </div>
                                     
-                                    {/* Body Type & Vehicle Tyre options are ONLY visible when Truck category is selected */}
+                                    {/* SPECIFIC TRUCK VEHICLE CARDS - UNHIDDEN WHEN TRUCK IS SELECTED */}
                                     {selectedCategory === 'truck' && (
-                                        <div className="grid gap-4 md:grid-cols-2">
-                                            <div>
-                                                <label className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-700">
-                                                    <Layout className="h-4 w-4 text-primary-600" /> Body Type <span className="text-slate-400 font-normal text-xs">(Optional)</span>
-                                                </label>
-                                                <select
-                                                    name="ctBodyType"
-                                                    value={formData.ctBodyType}
-                                                    onChange={handleChange}
-                                                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3"
-                                                >
-                                                    <option value="">-- Any Body Type --</option>
-                                                    {(Array.isArray(bodyTypes) ? bodyTypes : []).map((bt) => (
-                                                        <option key={bt.id} value={bt.id}>{bt.name}</option>
-                                                    ))}
-                                                </select>
+                                        <div className="space-y-4 p-5 bg-gradient-to-br from-slate-50 to-emerald-50/40 rounded-3xl border border-emerald-100 shadow-sm animate-in fade-in slide-in-from-top-2 duration-300">
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <label className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                                                        <Truck className="h-4 w-4 text-emerald-600" /> Select Truck Model & Capacity
+                                                    </label>
+                                                    <p className="text-xs text-slate-500 mt-0.5">Choose the right vehicle configuration for your cargo size</p>
+                                                </div>
+                                                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-3 py-1 rounded-full border border-emerald-200">
+                                                    Required
+                                                </span>
                                             </div>
-                                            <div>
-                                                <label className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-700">
-                                                    <Database className="h-4 w-4 text-primary-600" /> Vehicle Tyre <span className="text-slate-400 font-normal text-xs">(Optional)</span>
-                                                </label>
-                                                <select
-                                                    name="ctTyreType"
-                                                    value={formData.ctTyreType}
-                                                    onChange={handleChange}
-                                                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3"
-                                                >
-                                                    <option value="">-- Any Tyre Configuration --</option>
-                                                    {(Array.isArray(tyreTypes) ? tyreTypes : []).map((tt) => (
-                                                        <option key={tt.id} value={tt.id}>{tt.name}</option>
-                                                    ))}
-                                                </select>
+
+                                            {/* Interactive Visual Truck Cards */}
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                                {[
+                                                    { idSuffix: 'mini', label: '🚚 Mini Truck', sub: 'Tata Ace / Bolero', keyMatch: 'mini' },
+                                                    { idSuffix: 'pickup', label: '🛻 Pickup', sub: 'LCV / 1.5 - 2.5 Ton', keyMatch: 'pickup' },
+                                                    { idSuffix: '14ft', label: '🚛 14 Ft Truck', sub: 'Medium Cargo Eicher', keyMatch: '14' },
+                                                    { idSuffix: 'open', label: '🚚 Open Body Truck', sub: 'Heavy Open Load', keyMatch: 'open' },
+                                                    { idSuffix: '17ft', label: '🚛 17 Ft Truck', sub: 'Heavy Commercial', keyMatch: '17' },
+                                                    { idSuffix: '20ft', label: '🚛 20 Ft Truck', sub: 'Multi-axle Freight', keyMatch: '20' },
+                                                    { idSuffix: '32ft', label: '🚛 32 Ft Truck', sub: 'Single/Multi Axle Container', keyMatch: '32' },
+                                                    { idSuffix: 'container', label: '📦 Container Truck', sub: 'Secure Box Container', keyMatch: 'container' },
+                                                ].map((cardItem) => {
+                                                    // Match with loaded vehicleTypes from DB
+                                                    const matchedVt = (Array.isArray(vehicleTypes) ? vehicleTypes : []).find(v => 
+                                                        v.name.toLowerCase().includes(cardItem.keyMatch)
+                                                    ) || vehicleTypes[0];
+                                                    const targetId = matchedVt ? String(matchedVt.id) : cardItem.idSuffix;
+                                                    const isSelected = String(formData.vehicle) === targetId;
+
+                                                    return (
+                                                        <button
+                                                            key={cardItem.idSuffix}
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setFormData(prev => ({
+                                                                    ...prev,
+                                                                    vehicle: targetId
+                                                                }));
+                                                            }}
+                                                            className={`p-3.5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between ${
+                                                                isSelected
+                                                                    ? 'border-emerald-600 bg-white text-slate-900 shadow-md ring-2 ring-emerald-500/20'
+                                                                    : 'border-slate-200/90 bg-white/80 text-slate-700 hover:border-slate-300 hover:bg-white'
+                                                            }`}
+                                                        >
+                                                            <div>
+                                                                <div className="flex items-center justify-between mb-1">
+                                                                    <span className="font-extrabold text-xs text-slate-900">{cardItem.label}</span>
+                                                                    {isSelected && <span className="w-2 h-2 rounded-full bg-emerald-600"></span>}
+                                                                </div>
+                                                                <p className="text-[10px] text-slate-500 leading-tight">{cardItem.sub}</p>
+                                                            </div>
+                                                            <div className="mt-2 text-right">
+                                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${isSelected ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                                                                    {isSelected ? '✓ Selected' : 'Select'}
+                                                                </span>
+                                                            </div>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+
+                                            {/* Body Type and Tyre Configuration Cards / Controls */}
+                                            <div className="grid gap-4 md:grid-cols-2 pt-2">
+                                                <div className="bg-white p-4 rounded-2xl border border-slate-200/80">
+                                                    <label className="mb-2 flex items-center gap-1.5 text-xs font-bold text-slate-800 uppercase tracking-wider">
+                                                        <Layout className="h-4 w-4 text-emerald-600" /> Body Configuration
+                                                    </label>
+                                                    <select
+                                                        name="ctBodyType"
+                                                        value={formData.ctBodyType}
+                                                        onChange={handleChange}
+                                                        className="w-full rounded-xl border border-slate-300 bg-slate-50/50 px-3.5 py-2.5 text-sm text-slate-800 font-medium outline-none focus:bg-white"
+                                                    >
+                                                        <option value="">-- Any Body Type (All Available) --</option>
+                                                        {(Array.isArray(bodyTypes) ? bodyTypes : []).map((bt) => (
+                                                            <option key={bt.id} value={bt.id}>
+                                                                🚚 {bt.name}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+
+                                                <div className="bg-white p-4 rounded-2xl border border-slate-200/80">
+                                                    <label className="mb-2 flex items-center gap-1.5 text-xs font-bold text-slate-800 uppercase tracking-wider">
+                                                        <Database className="h-4 w-4 text-emerald-600" /> Tyre Configuration
+                                                    </label>
+                                                    <select
+                                                        name="ctTyreType"
+                                                        value={formData.ctTyreType}
+                                                        onChange={handleChange}
+                                                        className="w-full rounded-xl border border-slate-300 bg-slate-50/50 px-3.5 py-2.5 text-sm text-slate-800 font-medium outline-none focus:bg-white"
+                                                    >
+                                                        <option value="">-- Any Tyre Count (4, 6, 10, 12, 14+ Tyre) --</option>
+                                                        {(Array.isArray(tyreTypes) ? tyreTypes : []).map((tt) => (
+                                                            <option key={tt.id} value={tt.id}>
+                                                                🔘 {tt.name}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
                                             </div>
                                         </div>
                                     )}
 
+                                    {/* Weight input with Unit Selector (kg or Tons) */}
                                     <div className="grid gap-4 md:grid-cols-2">
                                         <div>
-                                            <label className="mb-2 block text-sm font-semibold text-slate-700">Product Weight (kg)</label>
-                                            <input
-                                                required
-                                                min="1"
-                                                type="number"
-                                                name="weight"
-                                                value={formData.weight}
-                                                onChange={handleChange}
-                                                placeholder="Weight in kg"
-                                                className="w-full rounded-xl border border-slate-300 px-4 py-3"
-                                            />
-                                            {selectedCategory === 'two_wheeler' && parseNum(formData.weight) > 20 && (
-                                                <div className="mt-2.5 p-3.5 bg-amber-50 border border-amber-300 text-amber-900 rounded-xl text-xs font-bold flex items-center gap-2.5 shadow-sm">
-                                                    <span className="text-base">⚠️</span>
-                                                    <span>Maximum weight for Two Wheeler is 20 kg. For heavier loads, please select 3 Wheeler Cargo or a Truck.</span>
-                                                </div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <label className="text-sm font-semibold text-slate-700">Product Weight</label>
+                                                {selectedCategory === 'bike' ? (
+                                                    <span className="text-xs font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                                                        Max 20 kg for Bike
+                                                    </span>
+                                                ) : (
+                                                    <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-bold">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setFormData(p => ({ ...p, weightUnit: 'kg' }))}
+                                                            className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+                                                                formData.weightUnit === 'kg'
+                                                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                                                    : 'text-slate-600 hover:text-slate-900'
+                                                            }`}
+                                                        >
+                                                            kg
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setFormData(p => ({ ...p, weightUnit: 'Tons' }))}
+                                                            className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+                                                                formData.weightUnit === 'Tons'
+                                                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                                                    : 'text-slate-600 hover:text-slate-900'
+                                                            }`}
+                                                        >
+                                                            Tons
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="relative">
+                                                <input
+                                                    required
+                                                    min="0.1"
+                                                    step="any"
+                                                    max={selectedCategory === 'bike' ? 20 : undefined}
+                                                    type="number"
+                                                    name="weight"
+                                                    value={formData.weight}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (selectedCategory === 'bike' && Number(val) > 20) {
+                                                            alert('Bike delivery is restricted to a maximum of 20 kg.');
+                                                            setFormData(p => ({ ...p, weight: '20' }));
+                                                            return;
+                                                        }
+                                                        handleChange(e);
+                                                    }}
+                                                    placeholder={selectedCategory === 'bike' ? "Weight in kg (max 20 kg)" : `Weight in ${formData.weightUnit}`}
+                                                    className="w-full rounded-xl border border-slate-300 px-4 py-3 pr-16"
+                                                />
+                                                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-extrabold text-slate-400 uppercase">
+                                                    {selectedCategory === 'bike' ? 'kg' : formData.weightUnit}
+                                                </span>
+                                            </div>
+                                            {selectedCategory === 'bike' && Number(formData.weight) > 20 && (
+                                                <p className="mt-1 text-xs font-semibold text-rose-500">
+                                                    Weight exceeds the 20 kg limit for 2-Wheelers.
+                                                </p>
                                             )}
                                         </div>
                                         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                                             <p className="text-sm font-semibold text-slate-700">Matching note</p>
-                                            <p className="mt-1 text-sm leading-6 text-slate-500">Vehicle match is based on the selected vehicle requirements and the pickup/drop details you provide.</p>
+                                            <p className="mt-1 text-sm leading-6 text-slate-500">
+                                                {selectedCategory === 'bike'
+                                                    ? 'Direct match with nearby two-wheeler delivery partners (restricted to parcels under 20 kg).'
+                                                    : selectedCategory === 'auto'
+                                                    ? 'Direct match with three-wheeler / auto delivery partners for local goods transport.'
+                                                    : 'Vehicle match is based on your selected truck type, body type, tyre count, and weight.'}
+                                            </p>
                                         </div>
                                     </div>
+                                    <div className="grid gap-6 md:grid-cols-2 pt-2">
+                                          {/* Pickup Location */}
+                                          <div className="relative space-y-2">
+                                              <div className="flex items-center justify-between">
+                                                  <label className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                                                      <MapPin className="h-4 w-4 text-emerald-600" /> Pickup Location
+                                                  </label>
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => handleUseCurrentLocation('pickup')}
+                                                      className="inline-flex items-center gap-1 text-xs font-bold text-primary-600 hover:text-primary-800 transition-colors"
+                                                  >
+                                                      <Navigation className="h-3 w-3" /> Current Location
+                                                  </button>
+                                              </div>
 
-                                    <div className="grid gap-4 md:grid-cols-2">
-                                        <div>
-                                            <div className="mb-2 flex items-center justify-between flex-wrap gap-2">
-                                                <label className="text-sm font-semibold text-slate-700">Pickup Location</label>
-                                                <div className="flex items-center gap-1.5">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setActiveSavedAddressModal('pickup')}
-                                                        className="text-xs font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg border border-emerald-200 transition-all active:scale-95 shadow-sm"
-                                                        title="Choose from My Saved Pickup Addresses"
-                                                    >
-                                                        <Bookmark className="w-3 h-3 text-emerald-600 fill-emerald-600/30" />
-                                                        <span>Saved Addresses</span>
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => useCurrentLocation('pickup')}
-                                                        disabled={locatingField === 'pickup'}
-                                                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-200 transition-all active:scale-95 shadow-sm"
-                                                        title="Set Pickup to My Current Live GPS Location"
-                                                    >
-                                                        {locatingField === 'pickup' ? (
-                                                            <>
-                                                                <Loader2 className="w-3 h-3 animate-spin" />
-                                                                <span>Locating...</span>
-                                                            </>
-                                                        ) : (
-                                                            <>
-                                                                <Navigation className="w-3 h-3 text-indigo-600 fill-indigo-600/20" />
-                                                                <span>Use Current Location</span>
-                                                            </>
-                                                        )}
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            <div className="flex gap-2">
-                                                <div className="relative flex-1">
-                                                    <input
-                                                        required
-                                                        type="text"
-                                                        name="pickup"
-                                                        value={formData.pickup}
-                                                        onChange={handleChange}
-                                                        onFocus={() => {
-                                                            if (formData.pickup && formData.pickup.trim().length >= 2) {
-                                                                fetchAddressSuggestions(formData.pickup, 'pickup');
-                                                            }
+                                              {/* Saved Address Quick Selector for Pickup */}
+                                              {savedAddresses.length > 0 && (
+                                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                                      <span className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
+                                                          <Bookmark className="h-3 w-3 text-emerald-600" /> Saved:
+                                                      </span>
+                                                      {savedAddresses.map((addr) => (
+                                                          <button
+                                                              key={addr.id}
+                                                              type="button"
+                                                              onClick={() => {
+                                                                  setFormData(p => ({
+                                                                      ...p,
+                                                                      pickup: addr.text,
+                                                                      pickupLat: addr.lat || p.pickupLat,
+                                                                      pickupLng: addr.lng || p.pickupLng
+                                                                  }));
+                                                                  if (addr.lat && addr.lng) {
+                                                                      const nLat = Number(addr.lat);
+                                                                      const nLng = Number(addr.lng);
+                                                                      if (Number.isFinite(nLat) && Number.isFinite(nLng)) {
+                                                                          setMapCenter([nLat, nLng]);
+                                                                          setMapZoom(16);
+                                                                      }
+                                                                  } else {
+                                                                      forwardGeocode(addr.text, 'pickup');
+                                                                  }
+                                                              }}
+                                                              className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
+                                                                  formData.pickup === addr.text
+                                                                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                                                                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
+                                                              }`}
+                                                          >
+                                                              <span>
+                                                                  {addr.label.toLowerCase() === 'home' ? '🏠' : 
+                                                                   addr.label.toLowerCase() === 'office' ? '🏢' : 
+                                                                   addr.label.toLowerCase() === 'warehouse' ? '🏭' : '📍'}
+                                                              </span>
+                                                              <span>{addr.label}</span>
+                                                          </button>
+                                                      ))}
+                                                  </div>
+                                              )}
+
+                                              <div className="flex gap-2">
+                                                  <input
+                                                      required
+                                                      type="text"
+                                                      name="pickup"
+                                                      value={formData.pickup}
+                                                      onChange={(e) => {
+                                                          handleChange(e);
+                                                          fetchLocationSuggestions(e.target.value, 'pickup');
+                                                      }}
+                                                      onFocus={() => {
+                                                          if (pickupSuggestions.length > 0) setShowPickupSuggestions(true);
+                                                      }}
+                                                      placeholder="Pickup address (e.g. Vishal Mega Mart)"
+                                                      className="flex-1 rounded-xl border border-slate-300 px-3.5 py-3 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all font-medium"
+                                                  />
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                          forwardGeocode(formData.pickup, 'pickup');
+                                                          setShowPickupSuggestions(false);
+                                                      }}
+                                                      className="bg-slate-900 hover:bg-slate-800 text-white px-3.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer shrink-0"
+                                                  >
+                                                      Locate
+                                                  </button>
+                                                  {formData.pickup && (
+                                                      <button
+                                                          type="button"
+                                                          title="Save this address for fast booking"
+                                                          onClick={() => {
+                                                              setShowSaveAddressModal({
+                                                                  open: true,
+                                                                  target: 'pickup',
+                                                                  text: formData.pickup,
+                                                                  lat: formData.pickupLat,
+                                                                  lng: formData.pickupLng
+                                                              });
+                                                              setModalAddressLabel('Home');
+                                                              setModalCustomLabel('');
+                                                              setSaveAddressFeedback('');
+                                                          }}
+                                                          className="p-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl transition-colors cursor-pointer shrink-0 flex items-center justify-center"
+                                                      >
+                                                          <Bookmark className="h-4 w-4" />
+                                                      </button>
+                                                  )}
+                                              </div>
+
+                                              {/* Autocomplete Dropdown for Pickup */}
+                                              {showPickupSuggestions && pickupSuggestions.length > 0 && (
+                                                  <div className="absolute left-0 right-0 top-full mt-1.5 z-[100] max-h-60 overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl py-2">
+                                                      {pickupSuggestions.map((item, idx) => (
+                                                          <div
+                                                              key={idx}
+                                                              onClick={() => {
+                                                                  const ltt = String(item.lat || item.Lat);
+                                                                  const lnn = String(item.lon || item.Lon);
+                                                                  setFormData(p => ({
+                                                                      ...p,
+                                                                      pickup: item.displayName,
+                                                                      pickupLat: ltt,
+                                                                      pickupLng: lnn
+                                                                  }));
+                                                                  const nLat = Number(ltt);
+                                                                  const nLng = Number(lnn);
+                                                                  if (Number.isFinite(nLat) && Number.isFinite(nLng)) {
+                                                                      setMapCenter([nLat, nLng]);
+                                                                      setMapZoom(16);
+                                                                  }
+                                                                  setShowPickupSuggestions(false);
+                                                              }}
+                                                              className="flex items-start gap-3 px-4 py-2.5 hover:bg-primary-50 cursor-pointer transition-colors border-b border-slate-100 last:border-0"
+                                                          >
+                                                              <MapPin className="h-4 w-4 text-primary-600 mt-1 shrink-0" />
+                                                              <div>
+                                                                  <p className="text-xs font-bold text-slate-800">{item.displayName}</p>
+                                                                  {item.type && <span className="text-[10px] uppercase font-semibold text-slate-400">{item.type}</span>}
+                                                              </div>
+                                                          </div>
+                                                      ))}
+                                                  </div>
+                                              )}
+
+                                              <div className="grid grid-cols-2 gap-2 mt-2">
+                                                  <input
+                                                      type="text"
+                                                      name="pickupBuildingNo"
+                                                      value={formData.pickupBuildingNo}
+                                                      onChange={handleChange}
+                                                      placeholder="Bldg/Flat (Opt)"
+                                                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                  />
+                                                  <input
+                                                      type="text"
+                                                      name="pickupHouseNo"
+                                                      value={formData.pickupHouseNo}
+                                                      onChange={handleChange}
+                                                      placeholder="Apt/Street (Opt)"
+                                                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                  />
+                                              </div>
+                                          </div>
+
+                                          {/* Drop Location */}
+                                          <div className="relative space-y-2">
+                                              <div className="flex items-center justify-between">
+                                                  <label className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                                                      <MapPin className="h-4 w-4 text-rose-500" /> Drop Location
+                                                  </label>
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => handleUseCurrentLocation('destination')}
+                                                      className="inline-flex items-center gap-1 text-xs font-bold text-primary-600 hover:text-primary-800 transition-colors"
+                                                  >
+                                                      <Navigation className="h-3 w-3" /> Current Location
+                                                  </button>
+                                              </div>
+
+                                              {/* Saved Address Quick Selector for Drop */}
+                                              {savedAddresses.length > 0 && (
+                                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                                      <span className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
+                                                          <Bookmark className="h-3 w-3 text-rose-500" /> Saved:
+                                                      </span>
+                                                      {savedAddresses.map((addr) => (
+                                                          <button
+                                                              key={addr.id}
+                                                              type="button"
+                                                              onClick={() => {
+                                                                  setFormData(p => ({
+                                                                      ...p,
+                                                                      destination: addr.text,
+                                                                      dropLat: addr.lat || p.dropLat,
+                                                                      dropLng: addr.lng || p.dropLng
+                                                                  }));
+                                                                  if (addr.lat && addr.lng) {
+                                                                      const nLat = Number(addr.lat);
+                                                                      const nLng = Number(addr.lng);
+                                                                      if (Number.isFinite(nLat) && Number.isFinite(nLng)) {
+                                                                          setMapCenter([nLat, nLng]);
+                                                                          setMapZoom(16);
+                                                                      }
+                                                                  } else {
+                                                                      forwardGeocode(addr.text, 'destination');
+                                                                  }
+                                                              }}
+                                                              className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
+                                                                  formData.destination === addr.text
+                                                                      ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                                                                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
+                                                              }`}
+                                                          >
+                                                              <span>
+                                                                  {addr.label.toLowerCase() === 'home' ? '🏠' : 
+                                                                   addr.label.toLowerCase() === 'office' ? '🏢' : 
+                                                                   addr.label.toLowerCase() === 'warehouse' ? '🏭' : '📍'}
+                                                              </span>
+                                                              <span>{addr.label}</span>
+                                                          </button>
+                                                      ))}
+                                                  </div>
+                                              )}
+
+                                              <div className="flex gap-2">
+                                                  <input
+                                                      required
+                                                      type="text"
+                                                      name="destination"
+                                                      value={formData.destination}
+                                                      onChange={(e) => {
+                                                          handleChange(e);
+                                                          fetchLocationSuggestions(e.target.value, 'destination');
+                                                      }}
+                                                      onFocus={() => {
+                                                          if (dropSuggestions.length > 0) setShowDropSuggestions(true);
+                                                      }}
+                                                      placeholder="Drop address"
+                                                      className="flex-1 rounded-xl border border-slate-300 px-3.5 py-3 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all font-medium"
+                                                  />
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                          forwardGeocode(formData.destination, 'destination');
+                                                          setShowDropSuggestions(false);
+                                                      }}
+                                                      className="bg-slate-900 hover:bg-slate-800 text-white px-3.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer shrink-0"
+                                                  >
+                                                      Locate
+                                                  </button>
+                                                  {formData.destination && (
+                                                      <button
+                                                          type="button"
+                                                          title="Save this address for fast booking"
+                                                          onClick={() => {
+                                                              setShowSaveAddressModal({
+                                                                  open: true,
+                                                                  target: 'destination',
+                                                                  text: formData.destination,
+                                                                  lat: formData.dropLat,
+                                                                  lng: formData.dropLng
+                                                              });
+                                                              setModalAddressLabel('Office');
+                                                              setModalCustomLabel('');
+                                                              setSaveAddressFeedback('');
+                                                          }}
+                                                          className="p-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl transition-colors cursor-pointer shrink-0 flex items-center justify-center"
+                                                      >
+                                                          <Bookmark className="h-4 w-4" />
+                                                      </button>
+                                                  )}
+                                              </div>
+
+                                              {/* Autocomplete Dropdown for Drop */}
+                                              {showDropSuggestions && dropSuggestions.length > 0 && (
+                                                  <div className="absolute left-0 right-0 top-full mt-1.5 z-[100] max-h-60 overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl py-2">
+                                                      {dropSuggestions.map((item, idx) => (
+                                                          <div
+                                                              key={idx}
+                                                              onClick={() => {
+                                                                  const ltt = String(item.lat || item.Lat);
+                                                                  const lnn = String(item.lon || item.Lon);
+                                                                  setFormData(p => ({
+                                                                      ...p,
+                                                                      destination: item.displayName,
+                                                                      dropLat: ltt,
+                                                                      dropLng: lnn
+                                                                  }));
+                                                                  const nLat = Number(ltt);
+                                                                  const nLng = Number(lnn);
+                                                                  if (Number.isFinite(nLat) && Number.isFinite(nLng)) {
+                                                                      setMapCenter([nLat, nLng]);
+                                                                      setMapZoom(16);
+                                                                  }
+                                                                  setShowDropSuggestions(false);
+                                                              }}
+                                                              className="flex items-start gap-3 px-4 py-2.5 hover:bg-primary-50 cursor-pointer transition-colors border-b border-slate-100 last:border-0"
+                                                          >
+                                                              <MapPin className="h-4 w-4 text-primary-600 mt-1 shrink-0" />
+                                                              <div>
+                                                                  <p className="text-xs font-bold text-slate-800">{item.displayName}</p>
+                                                                  {item.type && <span className="text-[10px] uppercase font-semibold text-slate-400">{item.type}</span>}
+                                                              </div>
+                                                          </div>
+                                                      ))}
+                                                  </div>
+                                              )}
+
+                                              <div className="grid grid-cols-2 gap-2 mt-2">
+                                                  <input
+                                                      type="text"
+                                                      name="dropBuildingNo"
+                                                      value={formData.dropBuildingNo}
+                                                      onChange={handleChange}
+                                                      placeholder="Bldg/Flat (Opt)"
+                                                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                  />
+                                                  <input
+                                                      type="text"
+                                                      name="dropHouseNo"
+                                                      value={formData.dropHouseNo}
+                                                      onChange={handleChange}
+                                                      placeholder="Apt/Street (Opt)"
+                                                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
+                                                  />
+                                              </div>
+                                          </div>
+                                      </div>
+
+                                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2 sm:p-5">
+                                         <div className="mb-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-2">
+                                             <div>
+                                                 <div className="mb-1 flex items-center gap-2 text-slate-800">
+                                                     <MapPin className="h-5 w-5 text-primary-600" />
+                                                     <h3 className="font-bold">Interactive Location Picker</h3>
+                                                 </div>
+                                                 <p className="text-sm text-slate-500">Drag the pins or click on the map to set exact pickup and drop coordinates.</p>
+                                             </div>
+                                         </div>
+
+                                         <div className="h-[420px] sm:h-[450px] w-full rounded-xl overflow-hidden shadow-md border border-slate-300 mb-4">
+                                             {typeof window !== 'undefined' && (
+                                                 <MapContainer
+                                                     center={mapCenter}
+                                                     zoom={mapZoom}
+                                                     scrollWheelZoom={true}
+                                                     style={{ height: '100%', width: '100%' }}
+                                                 >
+                                                     <MapController center={mapCenter} zoom={mapZoom} />
+                                                     <TileLayer
+                                                         attribution='&copy; Google Maps'
+                                                         url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
+                                                     />
+                                                    <Marker
+                                                        position={[
+                                                            Number.isFinite(Number(formData.pickupLat)) ? Number(formData.pickupLat) : 28.6139,
+                                                            Number.isFinite(Number(formData.pickupLng)) ? Number(formData.pickupLng) : 77.2090
+                                                        ]}
+                                                        draggable={true}
+                                                        eventHandlers={{
+                                                            dragend: (e) => {
+                                                                const marker = e.target;
+                                                                const position = marker.getLatLng();
+                                                                setFormData(p => ({ ...p, pickupLat: position.lat.toFixed(6), pickupLng: position.lng.toFixed(6) }));
+                                                                reverseGeocode(position.lat, position.lng, 'pickup');
+                                                            },
                                                         }}
-                                                        placeholder="Pickup address or district"
-                                                        className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm focus:border-indigo-500 outline-none"
                                                     />
-                                                    {showPickupSuggestions && pickupSuggestions.length > 0 && (
-                                                        <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-[999] max-h-56 overflow-y-auto divide-y divide-slate-100">
-                                                            {pickupSuggestions.map((item, idx) => (
-                                                                <button
-                                                                    key={idx}
-                                                                    type="button"
-                                                                    onClick={() => handleSelectSuggestion(item, 'pickup')}
-                                                                    className="w-full text-left px-3 py-2.5 text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 flex items-start gap-2 cursor-pointer transition-colors"
-                                                                >
-                                                                    <MapPin className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
-                                                                    <span className="line-clamp-2">{item.display_name}</span>
-                                                                </button>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => forwardGeocode(formData.pickup, 'pickup')}
-                                                    className="bg-slate-900 hover:bg-slate-800 text-white px-4 rounded-xl text-sm font-semibold transition-all cursor-pointer shrink-0 h-[46px]"
-                                                >
-                                                    Locate
-                                                </button>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-2 mt-2">
-                                                <input
-                                                    type="text"
-                                                    name="pickupBuildingNo"
-                                                    value={formData.pickupBuildingNo}
-                                                    onChange={handleChange}
-                                                    placeholder="Building No. (Optional)"
-                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    name="pickupHouseNo"
-                                                    value={formData.pickupHouseNo}
-                                                    onChange={handleChange}
-                                                    placeholder="House/Apt No. (Optional)"
-                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
-                                                />
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <div className="mb-2 flex items-center justify-between flex-wrap gap-2">
-                                                <label className="text-sm font-semibold text-slate-700">Drop Location</label>
-                                                <div className="flex items-center gap-1.5">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setActiveSavedAddressModal('destination')}
-                                                        className="text-xs font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg border border-emerald-200 transition-all active:scale-95 shadow-sm"
-                                                        title="Choose from My Saved Drop Addresses"
-                                                    >
-                                                        <Bookmark className="w-3 h-3 text-emerald-600 fill-emerald-600/30" />
-                                                        <span>Saved Addresses</span>
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => useCurrentLocation('destination')}
-                                                        disabled={locatingField === 'destination'}
-                                                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-200 transition-all active:scale-95 shadow-sm"
-                                                        title="Set Drop to My Current Live GPS Location"
-                                                    >
-                                                        {locatingField === 'destination' ? (
-                                                            <>
-                                                                <Loader2 className="w-3 h-3 animate-spin" />
-                                                                <span>Locating...</span>
-                                                            </>
-                                                        ) : (
-                                                            <>
-                                                                <Navigation className="w-3 h-3 text-indigo-600 fill-indigo-600/20" />
-                                                                <span>Use Current Location</span>
-                                                            </>
-                                                        )}
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            <div className="flex gap-2">
-                                                <div className="relative flex-1">
-                                                    <input
-                                                        required
-                                                        type="text"
-                                                        name="destination"
-                                                        value={formData.destination}
-                                                        onChange={handleChange}
-                                                        onFocus={() => {
-                                                            if (formData.destination && formData.destination.trim().length >= 2) {
-                                                                fetchAddressSuggestions(formData.destination, 'destination');
-                                                            }
+                                                    <Marker
+                                                        position={[
+                                                            Number.isFinite(Number(formData.dropLat)) ? Number(formData.dropLat) : 19.0760,
+                                                            Number.isFinite(Number(formData.dropLng)) ? Number(formData.dropLng) : 72.8777
+                                                        ]}
+                                                        draggable={true}
+                                                        eventHandlers={{
+                                                            dragend: (e) => {
+                                                                const marker = e.target;
+                                                                const position = marker.getLatLng();
+                                                                setFormData(p => ({ ...p, dropLat: position.lat.toFixed(6), dropLng: position.lng.toFixed(6) }));
+                                                                reverseGeocode(position.lat, position.lng, 'destination');
+                                                            },
                                                         }}
-                                                        placeholder="Drop address or district"
-                                                        className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm focus:border-indigo-500 outline-none"
                                                     />
-                                                    {showDropSuggestions && dropSuggestions.length > 0 && (
-                                                        <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-[999] max-h-56 overflow-y-auto divide-y divide-slate-100">
-                                                            {dropSuggestions.map((item, idx) => (
-                                                                <button
-                                                                    key={idx}
-                                                                    type="button"
-                                                                    onClick={() => handleSelectSuggestion(item, 'destination')}
-                                                                    className="w-full text-left px-3 py-2.5 text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 flex items-start gap-2 cursor-pointer transition-colors"
-                                                                >
-                                                                    <MapPin className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
-                                                                    <span className="line-clamp-2">{item.display_name}</span>
-                                                                </button>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => forwardGeocode(formData.destination, 'destination')}
-                                                    className="bg-slate-900 hover:bg-slate-800 text-white px-4 rounded-xl text-sm font-semibold transition-all cursor-pointer shrink-0 h-[46px]"
-                                                >
-                                                    Locate
-                                                </button>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-2 mt-2">
-                                                <input
-                                                    type="text"
-                                                    name="dropBuildingNo"
-                                                    value={formData.dropBuildingNo}
-                                                    onChange={handleChange}
-                                                    placeholder="Building No. (Optional)"
-                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    name="dropHouseNo"
-                                                    value={formData.dropHouseNo}
-                                                    onChange={handleChange}
-                                                    placeholder="House/Apt No. (Optional)"
-                                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                                        <div className="mb-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                                            <div>
-                                                <div className="mb-1 flex items-center gap-2 text-slate-800">
-                                                    <MapPin className="h-5 w-5 text-primary-600" />
-                                                    <h3 className="font-bold">Interactive Location Picker</h3>
-                                                </div>
-                                                <p className="text-sm text-slate-500">Drag the pins or click on the map to set exact pickup and drop coordinates.</p>
-                                            </div>
-                                        </div>
-
-                                        <div className="h-[420px] w-full rounded-2xl overflow-hidden shadow-md border border-slate-300 mb-6 relative">
-                                            {typeof window !== 'undefined' && (() => {
-                                                const pLat = Number(formData.pickupLat);
-                                                const pLng = Number(formData.pickupLng);
-                                                const dLat = Number(formData.dropLat);
-                                                const dLng = Number(formData.dropLng);
-                                                const validP = Number.isFinite(pLat) && pLat !== 0;
-                                                const validD = Number.isFinite(dLat) && dLat !== 0;
-
-                                                const pickupIcon = L.divIcon({
-                                                    className: 'custom-pickup-pin',
-                                                    html: `<div style="background-color: #10b981; color: white; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.35); font-weight: 900; font-size: 16px;">📍</div>`,
-                                                    iconSize: [36, 36],
-                                                    iconAnchor: [18, 18]
-                                                });
-
-                                                const dropIcon = L.divIcon({
-                                                    className: 'custom-drop-pin',
-                                                    html: `<div style="background-color: #ef4444; color: white; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.35); font-weight: 900; font-size: 16px;">🏁</div>`,
-                                                    iconSize: [36, 36],
-                                                    iconAnchor: [18, 18]
-                                                });
-
-                                                return (
-                                                    <MapContainer
-                                                        center={validP ? [pLat, pLng] : (validD ? [dLat, dLng] : [20.5937, 78.9629])}
-                                                        zoom={validP || validD ? 14 : 5}
-                                                        scrollWheelZoom={true}
-                                                        style={{ height: '100%', width: '100%' }}
-                                                    >
-                                                        <TileLayer
-                                                            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
-                                                            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-                                                        />
-                                                        
-                                                        <MapAutoController pLat={pLat} pLng={pLng} dLat={dLat} dLng={dLng} focus={activeMapFocus} />
-
-                                                        {validP && (
-                                                            <Marker
-                                                                position={[pLat, pLng]}
-                                                                icon={pickupIcon}
-                                                                draggable={true}
-                                                                eventHandlers={{
-                                                                    dragend: (e) => {
-                                                                        const marker = e.target;
-                                                                        const position = marker.getLatLng();
-                                                                        setFormData(p => ({ ...p, pickupLat: position.lat.toFixed(6), pickupLng: position.lng.toFixed(6) }));
-                                                                        reverseGeocode(position.lat, position.lng, 'pickup');
-                                                                    },
-                                                                }}
-                                                            />
-                                                        )}
-
-                                                        {validD && (
-                                                            <Marker
-                                                                position={[dLat, dLng]}
-                                                                icon={dropIcon}
-                                                                draggable={true}
-                                                                eventHandlers={{
-                                                                    dragend: (e) => {
-                                                                        const marker = e.target;
-                                                                        const position = marker.getLatLng();
-                                                                        setFormData(p => ({ ...p, dropLat: position.lat.toFixed(6), dropLng: position.lng.toFixed(6) }));
-                                                                        reverseGeocode(position.lat, position.lng, 'destination');
-                                                                    },
-                                                                }}
-                                                            />
-                                                        )}
-
-                                                        {validP && validD && (
-                                                            <Polyline
-                                                                positions={[[pLat, pLng], [dLat, dLng]]}
-                                                                pathOptions={{ color: '#4f46e5', weight: 5, opacity: 0.85, dashArray: '10, 10' }}
-                                                            />
-                                                        )}
-                                                    </MapContainer>
-                                                );
-                                            })()}
+                                                </MapContainer>
+                                            )}
                                         </div>
 
                                         <div className="grid gap-4 md:grid-cols-2">
@@ -2303,8 +2038,7 @@ const CustomerDashboard = () => {
                                     </div>
                                 </form>
                             </div>
-                        </div>
-                    )}
+                        )}
                     </div>
 
                     <div className="col-span-1 space-y-6">
@@ -2329,7 +2063,7 @@ const CustomerDashboard = () => {
                                 <History className="h-5 w-5 text-slate-400" /> Shipment History
                             </h3>
                             <p className="text-sm leading-relaxed text-slate-600">
-                                Found <strong className="text-slate-900">{previousShipments.length} previous records</strong> ({activeShipments.length} active live).
+                                Found <strong className="text-slate-900">{shipments.length} records</strong> in the current session.
                             </p>
                         </div>
 
@@ -2361,8 +2095,8 @@ const CustomerDashboard = () => {
 
             {/* Tracking Modal */}
             {trackingBooking && (
-                <div onClick={() => setTrackingBooking(null)} className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
-                    <div onClick={(e) => e.stopPropagation()} className="relative w-full max-w-4xl rounded-3xl bg-white shadow-2xl overflow-hidden">
+                <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+                    <div className="relative w-full max-w-4xl rounded-3xl bg-white shadow-2xl overflow-hidden">
                         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Live Tracking: Ride #{trackingBooking.id}</h3>
@@ -2436,11 +2170,26 @@ const CustomerDashboard = () => {
                                 {/* Driver details panel */}
                                 <div className="p-5 bg-slate-50 rounded-2xl border border-slate-150 text-left space-y-4">
                                     <div className="flex items-center gap-3">
-                                        <div className="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center font-bold text-indigo-700 text-sm">
-                                            {matchedDriverDetails.driverName ? matchedDriverDetails.driverName.split(' ').map((n: string) => n[0]).join('') : 'D'}
+                                        <div className="w-12 h-12 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center font-bold text-indigo-700 text-sm border border-indigo-200 shrink-0">
+                                            {matchedDriverDetails.driverProfilePic ? (
+                                                <img 
+                                                    src={
+                                                        matchedDriverDetails.driverProfilePic.startsWith('http') || matchedDriverDetails.driverProfilePic.startsWith('data:')
+                                                            ? matchedDriverDetails.driverProfilePic
+                                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${matchedDriverDetails.driverProfilePic.startsWith('/') ? '' : '/'}${matchedDriverDetails.driverProfilePic}`
+                                                    }
+                                                    alt={matchedDriverDetails.driverName || 'Driver'}
+                                                    className="w-full h-full object-cover"
+                                                    onError={(e) => {
+                                                        (e.target as HTMLElement).style.display = 'none';
+                                                    }}
+                                                />
+                                            ) : (
+                                                <span>{matchedDriverDetails.driverName ? matchedDriverDetails.driverName.split(' ').map((n: string) => n[0]).join('') : 'D'}</span>
+                                            )}
                                         </div>
                                         <div>
-                                            <p className="font-bold text-slate-800 text-sm">{matchedDriverDetails.driverName || 'Madan Kumar'}</p>
+                                            <p className="font-bold text-slate-800 text-sm">{matchedDriverDetails.driverName || 'Assigned Driver'}</p>
                                             <p className="text-xs text-slate-400">Mobile: {matchedDriverDetails.driverPhone || '+91 98765 43210'}</p>
                                         </div>
                                     </div>
@@ -2574,8 +2323,8 @@ const CustomerDashboard = () => {
 
         {/* Rating Modal */}
         {isRatingModalOpen && selectedRatingBooking && (
-            <div onClick={() => { setIsRatingModalOpen(false); setSelectedRatingBooking(null); }} className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
+            <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
                     <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                         <h3 className="text-lg font-bold text-slate-900">Rate Your Ride</h3>
                         <button onClick={() => { setIsRatingModalOpen(false); setSelectedRatingBooking(null); }} className="p-1 hover:bg-slate-100 rounded-full">
@@ -2651,183 +2400,112 @@ const CustomerDashboard = () => {
                 </div>
             </div>
         )}
-        {/* Saved Addresses Modal */}
-        {activeSavedAddressModal !== null && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
-                    <div className="bg-slate-900 text-white p-5 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                                <Bookmark className="w-5 h-5 fill-emerald-400/20" />
-                            </div>
-                            <div>
-                                <h3 className="font-extrabold text-base">Select Saved Address</h3>
-                                <p className="text-xs text-slate-300">
-                                    For {activeSavedAddressModal === 'pickup' ? 'Pickup Location' : 'Drop Location'}
-                                </p>
-                            </div>
+        {/* SAVE ADDRESS MODAL DIALOG */}
+        {showSaveAddressModal.open && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+                <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b pb-3">
+                        <div className="flex items-center gap-2">
+                            <Bookmark className="h-5 w-5 text-emerald-600" />
+                            <h3 className="text-base font-extrabold text-slate-900">
+                                Save Location for Fast Booking
+                            </h3>
                         </div>
                         <button
-                            onClick={() => {
-                                setActiveSavedAddressModal(null);
-                                setIsAddingNewSaved(false);
-                            }}
-                            className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition-colors cursor-pointer"
+                            onClick={() => setShowSaveAddressModal(p => ({ ...p, open: false }))}
+                            className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                         >
-                            <X className="w-4 h-4" />
+                            <X className="h-5 w-5" />
                         </button>
                     </div>
 
-                    <div className="p-5 max-h-[75vh] overflow-y-auto space-y-4">
-                        {/* Search Filter */}
-                        <div className="relative">
-                            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
-                            <input
-                                type="text"
-                                value={savedSearchQuery}
-                                onChange={(e) => setSavedSearchQuery(e.target.value)}
-                                placeholder="Search saved addresses..."
-                                className="w-full rounded-xl border border-slate-200 pl-10 pr-4 py-2.5 text-xs focus:border-emerald-500 outline-none"
-                            />
+                    <div className="space-y-3">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-700 mb-1">
+                                Address Text
+                            </label>
+                            <p className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-medium line-clamp-3">
+                                {showSaveAddressModal.text}
+                            </p>
                         </div>
 
-                        {/* List of Saved Addresses */}
-                        <div className="space-y-2">
-                            {savedAddresses
-                                .filter(item => 
-                                    item.title.toLowerCase().includes(savedSearchQuery.toLowerCase()) ||
-                                    item.address.toLowerCase().includes(savedSearchQuery.toLowerCase())
-                                )
-                                .map((item) => (
-                                    <div
-                                        key={item.id}
-                                        onClick={() => handleSelectSavedAddress(item, activeSavedAddressModal)}
-                                        className="group p-3.5 rounded-2xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition-all cursor-pointer flex items-center justify-between gap-3 shadow-sm hover:shadow"
-                                    >
-                                        <div className="flex items-start gap-3 min-w-0">
-                                            <div className="w-8 h-8 rounded-xl bg-slate-100 group-hover:bg-emerald-100 text-slate-600 group-hover:text-emerald-700 flex items-center justify-center shrink-0 mt-0.5 transition-colors">
-                                                {item.category === 'home' && <Home className="w-4 h-4" />}
-                                                {item.category === 'office' && <Building className="w-4 h-4" />}
-                                                {item.category === 'warehouse' && <Package className="w-4 h-4" />}
-                                                {(!item.category || item.category === 'other') && <MapPin className="w-4 h-4" />}
-                                            </div>
-                                            <div className="min-w-0">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-bold text-sm text-slate-900 group-hover:text-emerald-900">{item.title}</span>
-                                                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 group-hover:bg-emerald-100 group-hover:text-emerald-800">
-                                                        {item.category || 'saved'}
-                                                    </span>
-                                                </div>
-                                                <p className="text-xs text-slate-500 group-hover:text-slate-700 truncate mt-0.5">{item.address}</p>
-                                                {(item.buildingNo || item.houseNo) && (
-                                                    <p className="text-[11px] text-slate-400 mt-0.5">
-                                                        {[item.houseNo, item.buildingNo].filter(Boolean).join(' • ')}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="flex items-center gap-1 shrink-0">
-                                            <span className="text-xs font-extrabold text-emerald-600 opacity-0 group-hover:opacity-100 transition-opacity">Select</span>
-                                            <button
-                                                type="button"
-                                                onClick={(e) => handleDeleteSavedAddress(item.id, e)}
-                                                className="w-7 h-7 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-600 flex items-center justify-center transition-colors cursor-pointer ml-1"
-                                                title="Delete saved address"
-                                            >
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
+                        <div>
+                            <label className="block text-xs font-bold text-slate-700 mb-1">
+                                Select or Write Address Label
+                            </label>
+                            <select
+                                value={modalAddressLabel}
+                                onChange={(e) => setModalAddressLabel(e.target.value)}
+                                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 font-semibold focus:border-emerald-500 outline-none"
+                            >
+                                <option value="Home">🏠 Home</option>
+                                <option value="Office">🏢 Office</option>
+                                <option value="Warehouse">🏭 Warehouse</option>
+                                <option value="Shop">🏪 Shop / Store</option>
+                                <option value="Custom">✏️ Custom Label...</option>
+                            </select>
 
-                            {savedAddresses.length === 0 && (
-                                <p className="text-center py-6 text-xs text-slate-400">No saved addresses yet.</p>
+                            {modalAddressLabel === 'Custom' && (
+                                <input
+                                    type="text"
+                                    value={modalCustomLabel}
+                                    onChange={(e) => setModalCustomLabel(e.target.value)}
+                                    placeholder="e.g. My Godown, North Hub"
+                                    className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 outline-none"
+                                />
                             )}
+                            <p className="text-[11px] text-slate-400 mt-1">
+                                * Only 1 address is saved per unique label. Saving will update any existing address for this label.
+                            </p>
                         </div>
 
-                        {/* Save Current Address Section */}
-                        <div className="border-t border-slate-100 pt-4">
-                            {!isAddingNewSaved ? (
-                                <button
-                                    type="button"
-                                    onClick={() => setIsAddingNewSaved(true)}
-                                    className="w-full py-2.5 rounded-xl border border-dashed border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 text-emerald-700 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                                >
-                                    <Plus className="w-4 h-4" />
-                                    <span>Save Current Inputted Location as New Address</span>
-                                </button>
-                            ) : (
-                                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3 animate-in fade-in duration-200">
-                                    <h4 className="font-bold text-xs text-slate-800">Save Current {activeSavedAddressModal === 'pickup' ? 'Pickup' : 'Drop'} Address</h4>
-                                    <p className="text-[11px] text-slate-500 truncate bg-white p-2 rounded-lg border border-slate-200">
-                                        {activeSavedAddressModal === 'pickup' ? (formData.pickup || 'No address set yet') : (formData.destination || 'No address set yet')}
-                                    </p>
+                        {saveAddressFeedback && (
+                            <p className="text-xs font-bold text-emerald-600 bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">
+                                {saveAddressFeedback}
+                            </p>
+                        )}
 
-                                    <div className="space-y-2">
-                                        <input
-                                            type="text"
-                                            value={newSavedTitle}
-                                            onChange={(e) => setNewSavedTitle(e.target.value)}
-                                            placeholder="Label (e.g. My Flat, Factory 2, Client Site)"
-                                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs focus:border-emerald-500 outline-none"
-                                        />
-                                        <div className="flex gap-2">
-                                            {(['home', 'office', 'warehouse', 'other'] as const).map(cat => (
-                                                <button
-                                                    key={cat}
-                                                    type="button"
-                                                    onClick={() => setNewSavedCategory(cat)}
-                                                    className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border capitalize transition-all cursor-pointer ${
-                                                        newSavedCategory === cat 
-                                                            ? 'bg-slate-900 text-white border-slate-900' 
-                                                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
-                                                    }`}
-                                                >
-                                                    {cat}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <div className="flex gap-2 pt-1">
-                                        <button
-                                            type="button"
-                                            onClick={() => handleSaveCurrentAsSavedAddress(activeSavedAddressModal)}
-                                            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-xl text-xs transition-colors cursor-pointer"
-                                        >
-                                            Save Address
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setIsAddingNewSaved(false)}
-                                            className="px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-2 rounded-xl text-xs transition-colors cursor-pointer"
-                                        >
-                                            Cancel
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
+                        <div className="flex items-center gap-3 pt-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowSaveAddressModal(p => ({ ...p, open: false }))}
+                                className="flex-1 rounded-xl border border-slate-200 py-3 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const effectiveLabel = modalAddressLabel === 'Custom' ? modalCustomLabel.trim() : modalAddressLabel;
+                                    if (!effectiveLabel) {
+                                        setSaveAddressFeedback('Please enter a label.');
+                                        return;
+                                    }
+                                    const res = upsertSavedAddress(
+                                        effectiveLabel,
+                                        showSaveAddressModal.text,
+                                        showSaveAddressModal.lat,
+                                        showSaveAddressModal.lng
+                                    );
+                                    if (res.success) {
+                                        setSavedAddresses(res.addresses);
+                                        setSaveAddressFeedback(res.message);
+                                        setTimeout(() => {
+                                            setShowSaveAddressModal(p => ({ ...p, open: false }));
+                                        }, 1200);
+                                    } else {
+                                        setSaveAddressFeedback(res.message);
+                                    }
+                                }}
+                                className="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition-all active:scale-95"
+                            >
+                                Save Location
+                            </button>
                         </div>
                     </div>
                 </div>
             </div>
         )}
-
-        {/* Mobile Bottom Quick Navigation */}
-        <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-slate-900 border-t border-slate-800 text-white shadow-2xl flex items-center justify-around py-2 px-1 pb-safe">
-            <button onClick={() => { setActiveTab('new'); navigate('/customer-portal?tab=new'); }} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'new' ? 'text-primary-400' : 'text-slate-400'}`}>
-                <Home className="h-5 w-5" />
-                Home
-            </button>
-            <button onClick={() => { setActiveTab('shipments'); navigate('/customer-portal?tab=shipments'); }} className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'shipments' ? 'text-primary-400' : 'text-slate-400'}`}>
-                <Package className="h-5 w-5" />
-                Shipments
-            </button>
-            <button onClick={() => { navigate('/profile'); }} className={`flex flex-col items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-primary-400`}>
-                <User className="h-5 w-5" />
-                Profile
-            </button>
-        </div>
         </>
     );
 };

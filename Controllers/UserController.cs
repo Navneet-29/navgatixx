@@ -499,25 +499,146 @@ namespace navgatix.Controllers
         }
         [HttpPost("updateUser")]
         [AllowAnonymous]
-        public async Task<IActionResult> UpdateUser([FromBody] UserInfoViewModel model)
+        public async Task<IActionResult> UpdateUser([FromForm] UserInfoViewModel model)
         {
-            UserViewModel userModel = new UserViewModel
+            try
             {
-                UserName = model.UserName,
-                Email = model.Email,
-                FirstName = model.FirstName,
-                LastName = model.LastName,
-                PhoneNumber = model.PhoneNumber,
-                DOB = model.DOB,
-            };
-            var result = await _userService.UpdateUser(userModel);
-            if (result == "Success")
-            {
+                var userId = model.UserId;
+                if (string.IsNullOrEmpty(userId))
+                {
+                    return BadRequest(new { message = "UserId is required." });
+                }
+
+                var user = await _userService.FindUserByUserId(userId);
+                if (user == null)
+                {
+                    user = await _userService.FindByEmailAsync(model.Email);
+                }
+
+                if (user != null)
+                {
+                    model.UserName = user.UserName;
+                    model.Email = user.Email;
+                    user.FirstName = model.FirstName ?? user.FirstName;
+                    user.LastName = model.LastName ?? user.LastName;
+                    user.PhoneNumber = model.PhoneNumber ?? user.PhoneNumber;
+                    await _userService.UpdateUser(new UserViewModel
+                    {
+                        UserName = user.UserName,
+                        Email = user.Email,
+                        FirstName = user.FirstName,
+                        LastName = user.LastName,
+                        PhoneNumber = user.PhoneNumber
+                    });
+                }
+
+                // Handle file uploads (Profile photo, Aadhaar, PAN)
+                var files = Request.Form.Files;
+                var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "profiles");
+                if (!Directory.Exists(uploadsFolder))
+                {
+                    Directory.CreateDirectory(uploadsFolder);
+                }
+
+                string profilePicUrl = model.ProfilePic;
+                string aadhaarUrl = null;
+                string panUrl = null;
+
+                var profilePicFile = files.GetFile("profilePic") ?? files.GetFile("file") ?? files.GetFile("photo");
+                if (profilePicFile != null && profilePicFile.Length > 0)
+                {
+                    var picExt = Path.GetExtension(profilePicFile.FileName);
+                    var picName = $"profile_{userId}_{DateTime.UtcNow.Ticks}{picExt}";
+                    var picPath = Path.Combine(uploadsFolder, picName);
+                    using (var stream = new FileStream(picPath, FileMode.Create))
+                    {
+                        await profilePicFile.CopyToAsync(stream);
+                    }
+                    profilePicUrl = $"/uploads/profiles/{picName}";
+                    model.ProfilePic = profilePicUrl;
+                }
+
+                var aadhaarFile = files.GetFile("aadhaarCard");
+                if (aadhaarFile != null && aadhaarFile.Length > 0)
+                {
+                    var aExt = Path.GetExtension(aadhaarFile.FileName);
+                    var aName = $"aadhaar_{userId}_{DateTime.UtcNow.Ticks}{aExt}";
+                    var aPath = Path.Combine(uploadsFolder, aName);
+                    using (var stream = new FileStream(aPath, FileMode.Create))
+                    {
+                        await aadhaarFile.CopyToAsync(stream);
+                    }
+                    aadhaarUrl = $"/uploads/profiles/{aName}";
+                }
+
+                var panFile = files.GetFile("panCard");
+                if (panFile != null && panFile.Length > 0)
+                {
+                    var pExt = Path.GetExtension(panFile.FileName);
+                    var pName = $"pan_{userId}_{DateTime.UtcNow.Ticks}{pExt}";
+                    var pPath = Path.Combine(uploadsFolder, pName);
+                    using (var stream = new FileStream(pPath, FileMode.Create))
+                    {
+                        await panFile.CopyToAsync(stream);
+                    }
+                    panUrl = $"/uploads/profiles/{pName}";
+                }
+
+                if (!string.IsNullOrEmpty(aadhaarUrl) || !string.IsNullOrEmpty(panUrl))
+                {
+                    var descList = new List<string>();
+                    if (!string.IsNullOrEmpty(model.Description)) descList.Add(model.Description);
+                    if (!string.IsNullOrEmpty(aadhaarUrl)) descList.Add($"AADHAAR_URL:{aadhaarUrl}");
+                    if (!string.IsNullOrEmpty(panUrl)) descList.Add($"PAN_URL:{panUrl}");
+                    model.Description = string.Join("|", descList);
+                }
+
+                // If address is passed, map it to WhatsAppLink
+                if (!string.IsNullOrEmpty(Request.Form["address"]))
+                {
+                    model.Address = Request.Form["address"];
+                    model.WhatsAppLink = model.Address;
+                }
+
                 var userResult = await _userInfoService.SaveAsync(model);
-                if (userResult.Id != null && userResult.Id != Guid.Empty)
-                { model.Status = result; }
+
+                // If driver specific fields exist, update Driver record
+                var licenseNumber = Request.Form["licenseNumber"].ToString();
+                var vehicleName = Request.Form["vehicleName"].ToString();
+                var vehicleNumber = Request.Form["vehicleNumber"].ToString();
+                var gstNumber = Request.Form["gstNumber"].ToString();
+
+                var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == userId && d.IsDeleted != true);
+                if (driver != null)
+                {
+                    if (!string.IsNullOrEmpty(licenseNumber)) driver.LicenseNumber = licenseNumber;
+                    if (!string.IsNullOrEmpty(model.FirstName)) driver.Name = $"{model.FirstName} {model.LastName}".Trim();
+                    if (!string.IsNullOrEmpty(model.PhoneNumber)) driver.Phone = model.PhoneNumber;
+                    if (!string.IsNullOrEmpty(profilePicUrl)) driver.PhotoUrl = profilePicUrl;
+                    _db.Drivers.Update(driver);
+                    await _db.SaveChangesAsync();
+                }
+
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId && t.IsDeleted != true);
+                if (transporter != null)
+                {
+                    if (!string.IsNullOrEmpty(gstNumber)) transporter.GSTNumber = gstNumber;
+                    if (!string.IsNullOrEmpty(model.Address)) transporter.Address = model.Address;
+                    _db.TransporterDetails.Update(transporter);
+                    await _db.SaveChangesAsync();
+                }
+
+                return Ok(new { 
+                    status = "Success", 
+                    message = "Profile updated successfully!", 
+                    profilePic = profilePicUrl,
+                    address = model.Address
+                });
             }
-            return Ok(model);
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { status = "Error", message = ex.Message });
+            }
         }
         [HttpGet("getUserbyId")]
         [AllowAnonymous]
@@ -548,6 +669,7 @@ namespace navgatix.Controllers
             return Ok(model);
         }
         [HttpGet("getUserDetail/{userId}")]
+        [HttpGet("getUserDetail")]
         [AllowAnonymous]
         public async Task<IActionResult> GetUserDetail(string userId)
         {
@@ -591,6 +713,7 @@ namespace navgatix.Controllers
         {
             UserViewModel userModel = new UserViewModel
             {
+                UserId = userInfoView.UserId,
                 UserName = userInfoView.UserName,
                 Email = userInfoView.Email,
                 FirstName = userInfoView.FirstName,
@@ -604,8 +727,14 @@ namespace navgatix.Controllers
             return Ok(new { success = result == "Success", message = result });
         }
         [HttpPost("logoutAllDevices")]
-        public async Task<IActionResult> LogoutAllDevices([FromBody] string userId)
+        [AllowAnonymous]
+        public async Task<IActionResult> LogoutAllDevices([FromBody] UserInfoViewModel userInfoView)
         {
+            var userId = userInfoView.UserId;
+            if (string.IsNullOrEmpty(userId))
+            {
+                return BadRequest(new { success = false, message = "UserId is required." });
+            }
             var result = await _userService.LogoutAllDevices(userId);
             return Ok(new { success = result == "Success", message = result });
         }

@@ -3,10 +3,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.EntityFrameworkCore;
 using satguruApp.DLL.Models;
 using System;
-using System.Linq;
 
 
 namespace navgatix
@@ -22,24 +20,8 @@ namespace navgatix
                 try
                 {
                     var context = services.GetRequiredService<SatguruDBContext>();
-                    using (var conn = context.Database.GetDbConnection())
-                    {
-                        conn.Open();
-                        using (var cmd = conn.CreateCommand())
-                        {
-                            cmd.CommandText = @"
-                                IF NOT EXISTS (
-                                    SELECT * FROM sys.columns 
-                                    WHERE object_id = OBJECT_ID('Drivers') AND name = 'TransactionPIN'
-                                )
-                                BEGIN
-                                    ALTER TABLE Drivers ADD TransactionPIN VARCHAR(100) NULL;
-                                END";
-                            cmd.ExecuteNonQuery();
-                        }
-                    }
-                }
-                catch (Exception)
+                }   
+                catch (Exception ex)
                 {
 
                 }
