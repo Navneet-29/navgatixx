@@ -68,9 +68,9 @@ namespace navgatix.Controllers
         }
         [HttpPatch("{bookingId}/rideStatus")]
         [AllowAnonymous]
-        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null)
+        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null, [FromQuery] string cancelledByUserId = null)
         {
-            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId));
+            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId, cancelledByUserId));
         }
         [HttpPatch("{bookingId}/rideRequest/reject")]
         [AllowAnonymous]
@@ -88,7 +88,7 @@ namespace navgatix.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> CancelRide(long bookingId, [FromQuery] string userId = "")
         {
-            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, "cancelled", null));
+            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, "cancelled", null, userId));
         }
         [HttpGet("ride/{bookingId}")]
         [AllowAnonymous]

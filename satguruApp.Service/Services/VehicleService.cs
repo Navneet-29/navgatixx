@@ -1125,7 +1125,7 @@ namespace satguruApp.Service.Services
             return vm;
         }
 
-        public async Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null)
+        public async Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null, string? cancelledByUserId = null)
         {
             if (!RideStatus.TryParse(status, out var nextStatus))
             {
@@ -1140,6 +1140,28 @@ namespace satguruApp.Service.Services
             if (booking == null)
             {
                 return new BookingViewModel { Id = bookingId, Message = "Ride not found." };
+            }
+
+            Driver? cancelledDriver = null;
+            var cancellationActorRole = "System";
+            var cancellationActorName = "System";
+            if (nextStatus == RideStatus.Cancelled)
+            {
+                if (booking.DriverId.HasValue)
+                {
+                    cancelledDriver = await _db.Drivers.FirstOrDefaultAsync(x => x.Id == booking.DriverId.Value && x.IsDeleted != true);
+                }
+
+                if (!string.IsNullOrWhiteSpace(cancelledByUserId) && string.Equals(cancelledByUserId, booking.CustomerId, StringComparison.OrdinalIgnoreCase))
+                {
+                    cancellationActorRole = "Customer";
+                    cancellationActorName = string.IsNullOrWhiteSpace(booking.CustomerName) ? "Customer" : booking.CustomerName;
+                }
+                else if (!string.IsNullOrWhiteSpace(cancelledByUserId) && cancelledDriver != null && string.Equals(cancelledByUserId, cancelledDriver.UserId, StringComparison.OrdinalIgnoreCase))
+                {
+                    cancellationActorRole = "Driver";
+                    cancellationActorName = string.IsNullOrWhiteSpace(cancelledDriver.Name) ? "Driver" : cancelledDriver.Name;
+                }
             }
 
             if (!RideStatus.CanTransition(booking.CT_BookingStatus, nextStatus))
@@ -1218,8 +1240,9 @@ namespace satguruApp.Service.Services
             if (!string.IsNullOrWhiteSpace(booking.CustomerId))
             {
                 var customerMessage = GetCustomerStatusMessage(nextStatus, booking.Id);
-                var notifBody = nextStatus == RideStatus.Cancelled 
-                    ? $"RIDE_CANCELLED|{booking.Id}|{customerMessage.body}" 
+                var cancellationMessage = $"{cancellationActorRole} {cancellationActorName} cancelled ride #{booking.Id}.";
+                var notifBody = nextStatus == RideStatus.Cancelled
+                    ? $"RIDE_CANCELLED|{booking.Id}|{cancellationMessage}"
                     : (nextStatus == RideStatus.DriverAssigned 
                         ? $"RIDE_ASSIGNED|{booking.Id}|{customerMessage.body}" 
                         : customerMessage.body);
@@ -1230,7 +1253,7 @@ namespace satguruApp.Service.Services
                     new PushNotificationPayload
                     {
                         Title = customerMessage.title,
-                        Body = customerMessage.body,
+                        Body = nextStatus == RideStatus.Cancelled ? cancellationMessage : customerMessage.body,
                         Data = CreatePushData(booking.Id, "ride_status", RideStatus.ToName(nextStatus)),
                     });
             }
@@ -1238,22 +1261,19 @@ namespace satguruApp.Service.Services
             if (nextStatus == RideStatus.Cancelled)
             {
                 // 1. If a driver is assigned or mapped, notify the driver
-                Driver? driver = null;
-                if (booking.DriverId.HasValue)
+                Driver? driver = cancelledDriver;
+                if (driver != null)
                 {
-                    driver = await _db.Drivers
-                        .Include(d => d.Transporter)
-                        .FirstOrDefaultAsync(x => x.Id == booking.DriverId.Value);
-
                     if (driver != null && !string.IsNullOrWhiteSpace(driver.UserId))
                     {
-                        await CreateNotificationAsync(driver.UserId, "Ride Cancelled", $"RIDE_CANCELLED|{booking.Id}|Ride #{booking.Id} has been cancelled.");
+                        var cancellationMessage = $"{cancellationActorRole} {cancellationActorName} cancelled ride #{booking.Id}.";
+                        await CreateNotificationAsync(driver.UserId, "Ride Cancelled", $"RIDE_CANCELLED|{booking.Id}|{cancellationMessage}");
                         await SafePushToUserAsync(
                             driver.UserId,
                             new PushNotificationPayload
                             {
                                 Title = "Ride Cancelled",
-                                Body = $"Ride #{booking.Id} has been cancelled.",
+                                Body = cancellationMessage,
                                 Data = CreatePushData(booking.Id, "ride_status", RideStatus.ToName(nextStatus)),
                             });
                     }
@@ -1295,14 +1315,14 @@ namespace satguruApp.Service.Services
                 if (transporterDetail != null && !string.IsNullOrWhiteSpace(transporterDetail.UserId))
                 {
                     var transporterUserId = transporterDetail.UserId;
-                    var driverLabel = driver?.Name != null ? $" (Assigned to {driver.Name})" : "";
-                    await CreateNotificationAsync(transporterUserId, "Ride Cancelled", $"RIDE_CANCELLED|{booking.Id}|Ride #{booking.Id}{driverLabel} has been cancelled.");
+                    var cancellationMessage = $"{cancellationActorRole} {cancellationActorName} cancelled ride #{booking.Id}.";
+                    await CreateNotificationAsync(transporterUserId, "Ride Cancelled", $"RIDE_CANCELLED|{booking.Id}|{cancellationMessage}");
                     await SafePushToUserAsync(
                         transporterUserId,
                         new PushNotificationPayload
                         {
                             Title = "Ride Cancelled",
-                            Body = $"Ride #{booking.Id}{driverLabel} has been cancelled.",
+                            Body = cancellationMessage,
                             Data = CreatePushData(booking.Id, "ride_status", RideStatus.ToName(nextStatus)),
                         });
                 }

@@ -17,7 +17,7 @@ namespace satguruApp.Service.Services.Interfaces
         public Task<BookingViewModel> BookingVehicle(BookingViewModel model);
         public Task<BookingViewModel> CancelBookingVehicleRide(BookingViewModel model);
         Task<BookingViewModel> RequestRideAsync(BookingViewModel model);
-        Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null);
+        Task<BookingViewModel> UpdateRideStatusAsync(long bookingId, string status, Guid? driverId = null, string? cancelledByUserId = null);
         Task<BookingViewModel> RejectRideRequestAsync(long bookingId, string driverUserId);
         Task<BookingViewModel> RejectRideRequestByTransporterAsync(long bookingId, string transporterUserId);
         Task<BookingViewModel> GetRideAsync(long bookingId);

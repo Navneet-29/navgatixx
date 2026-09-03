@@ -490,7 +490,8 @@ namespace navgatix.Controllers
                 n.Message.StartsWith("DRIVER_ACCEPT_ORDER|") ||
                 n.Message.StartsWith("VEHICLE_ASSIGN|") ||
                 n.Message.StartsWith("CHAT_MESSAGE|") ||
-                n.Message.StartsWith("CHAT_MESSAGE_DIRECT|")
+                n.Message.StartsWith("CHAT_MESSAGE_DIRECT|") ||
+                n.Message.StartsWith("RIDE_CANCELLED|")
             ).ToList();
 
             return Ok(relationshipNotifications);
