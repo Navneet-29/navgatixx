@@ -61,4 +61,10 @@
   </ItemGroup>
 </Target>
 
+  <ItemGroup>
+    <None Update="Firebase\navgatix-service-account.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

@@ -3,6 +3,7 @@ import { LogOut, User } from 'lucide-react';
 import { disablePushNotifications } from '../lib/firebaseMessaging';
 import { logoutFirebaseAuth } from '../lib/firebaseAuth';
 import { useAuth } from '../hooks/useAuth';
+import apiClient from '../api/apiClient';
 
 const Navbar = () => {
     const navigate = useNavigate();
@@ -22,7 +23,10 @@ const Navbar = () => {
                 ? '/customer-portal'
                 : '/';
     const displayName = user?.firstName || user?.FirstName || user?.company || user?.Company || 'User';
-    const profilePic = user?.profilePic || user?.ProfilePic || '';
+    const rawPic = user?.profilePic || user?.ProfilePic || '';
+    const profilePic = rawPic
+        ? (rawPic.startsWith('http') || rawPic.startsWith('data:') ? rawPic : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${rawPic.startsWith('/') ? '' : '/'}${rawPic}`)
+        : '';
 
     const handleLogout = async () => {
         await disablePushNotifications();

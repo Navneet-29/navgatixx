@@ -292,16 +292,19 @@ namespace satguruApp.Service.Services
 
         public async Task<string> ChangePassword(UserViewModel model)
         {
-            var user = await FindByEmailAsync(model.Email) ?? await FindByEmailAsync(model.UserName);
-            if (user == null) return "Failed";
+            var user = (!string.IsNullOrEmpty(model.UserId) ? await _userManager.FindByIdAsync(model.UserId) : null)
+                ?? (!string.IsNullOrEmpty(model.Email) ? await FindByEmailAsync(model.Email) : null) 
+                ?? (!string.IsNullOrEmpty(model.UserName) ? await FindUserByUserName(model.UserName) : null);
+            if (user == null) return "User not found";
             var updateResult = await _userManager.ChangePasswordAsync(user, model.Password, model.NewPassword);
-            return updateResult.Succeeded ? "Success" : "Failed";
+            if (updateResult.Succeeded) return "Success";
+            return string.Join("; ", updateResult.Errors.Select(e => e.Description));
         }
 
         public async Task<string> LogoutAllDevices(string userId)
         {
             var user = await _userManager.FindByIdAsync(userId);
-            if (user == null) return "Failed";
+            if (user == null) return "User not found";
             var result = await _userManager.UpdateSecurityStampAsync(user);
             return result.Succeeded ? "Success" : "Failed";
         }
@@ -419,9 +422,11 @@ namespace satguruApp.Service.Services
                 TransporterId = transporterDetail?.Id.ToString(),
                 TransporterName = transporterDetail?.CompanyName,
                 DriverName = driverDetail?.Name,
-                CustomerName = customerDetail?.CompanyName,
                 FirstName = user.FirstName,
                 LastName = user.LastName,
+                PhoneNumber = user.PhoneNumber ?? userInfo?.PhoneNumber ?? (userInfo?.Mobile.HasValue == true ? userInfo.Mobile.Value.ToString() : null),
+                ProfilePic = userInfo?.ProfilePic ?? driverDetail?.PhotoUrl,
+                Address = transporterDetail?.Address ?? customerDetail?.Address,
                 UserId = user.Id,
                 AppUserId = user.AppUserId,
                 IsAuthenticated = true,

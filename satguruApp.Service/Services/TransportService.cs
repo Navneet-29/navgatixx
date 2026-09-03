@@ -208,7 +208,10 @@ namespace satguruApp.Service.Services
             if (transporter == null) return new TransporterDashboardSummaryViewModel();
 
             var fleetCount = await _db.Vehicles.CountAsync(v => v.TransporterId == transporter.Id && v.IsDeleted != true);
-            var driverCount = await _db.Drivers.CountAsync(d => d.TransporterId == transporter.Id && d.IsDeleted != true);
+            var driverListEntities = await _db.Drivers.Where(d => d.TransporterId == transporter.Id && d.IsDeleted != true).ToListAsync();
+            var driverCount = driverListEntities.Count;
+            var driverGuidIds = driverListEntities.Select(d => d.Id).ToList();
+            var vehicleGuidIds = await _db.Vehicles.Where(v => v.TransporterId == transporter.Id && v.IsDeleted != true).Select(v => v.Id).ToListAsync();
             
             var todayUtc = DateTime.UtcNow.Date;
 
@@ -222,32 +225,70 @@ namespace satguruApp.Service.Services
             var onlineDriversCount = driversList.Count(x => x.isOnline);
             var offlineDriversCount = driversList.Count(x => !x.isOnline);
 
-            // Today's Shipments (Completed or Ongoing created today)
-            var todaysShipmentsCount = await (from b in _db.Bookings
-                                              join v in _db.Vehicles on b.VehicleId equals v.Id
-                                              where v.TransporterId == transporter.Id 
-                                                    && b.IsDeleted != true
-                                                    && b.CreatedAt >= todayUtc
-                                              select b).CountAsync();
+            // All bookings linked to this transporter's vehicles or drivers
+            var allFleetBookings = await _db.Bookings
+                .Where(b => b.IsDeleted != true && 
+                           ((b.VehicleId.HasValue && vehicleGuidIds.Contains(b.VehicleId.Value)) ||
+                            (b.DriverId.HasValue && driverGuidIds.Contains(b.DriverId.Value))))
+                .ToListAsync();
 
-            // Active Shipments (Ongoing right now)
-            var activeShipmentsCount = await (from b in _db.Bookings
-                                              join v in _db.Vehicles on b.VehicleId equals v.Id
-                                              where v.TransporterId == transporter.Id 
-                                                    && b.IsDeleted != true
-                                                    && (b.CT_BookingStatus == RideStatus.DriverAssigned 
-                                                        || b.CT_BookingStatus == RideStatus.DriverArriving 
-                                                        || b.CT_BookingStatus == RideStatus.RideStarted)
-                                              select b).CountAsync();
+            // Today's Shipments (customer trips created today)
+            var todaysShipmentsCount = allFleetBookings
+                .Count(b => b.CustomerId != null && b.CreatedAt.HasValue && b.CreatedAt.Value.Date == todayUtc);
 
-            // Today's Earnings (rides completed today)
-            var todaysFaresSum = await (from b in _db.Bookings
-                                        join v in _db.Vehicles on b.VehicleId equals v.Id
-                                        where v.TransporterId == transporter.Id 
-                                              && b.CT_BookingStatus == RideStatus.RideCompleted 
-                                              && b.IsDeleted != true
-                                              && b.CreatedAt >= todayUtc
-                                        select b.FinalFare ?? b.EstimatedFare ?? 0).SumAsync();
+            // Active Shipments (customer trips currently active / on route - NOT standing assignments)
+            var activeShipmentsCount = allFleetBookings
+                .Count(b => b.CustomerId != null && 
+                           (b.CT_BookingStatus == RideStatus.DriverAssigned 
+                            || b.CT_BookingStatus == RideStatus.DriverArriving 
+                            || b.CT_BookingStatus == RideStatus.RideStarted));
+
+            // Today's Earnings (addition of today's net earnings of each driver/completed booking & recorded payments today)
+            var driverUserIds = driverListEntities.Where(d => !string.IsNullOrEmpty(d.UserId)).Select(d => d.UserId!).ToList();
+            var todaysDriverPayments = await _db.Payments
+                .Where(p => p.IsDeleted != true
+                            && p.PaymentStatus == "paid"
+                            && p.PaidAt >= todayUtc
+                            && p.TransactionReference != null)
+                .ToListAsync();
+
+            decimal todaysPaymentsFaresSum = 0;
+            var paidRideIds = new HashSet<long>();
+
+            foreach (var p in todaysDriverPayments)
+            {
+                var isDriverLinked = driverUserIds.Any(uId => p.TransactionReference!.Contains($"DRIVER_USER:{uId}"));
+                if (!isDriverLinked) continue;
+
+                if (p.PaymentMode == "cash_commission")
+                {
+                    // Commission = 10%, Gross fare = commission / 0.10
+                    todaysPaymentsFaresSum += (p.Amount ?? 0) * 10m;
+                    var match = System.Text.RegularExpressions.Regex.Match(p.TransactionReference!, @"RIDE:(\d+)");
+                    if (match.Success && long.TryParse(match.Groups[1].Value, out var rId))
+                    {
+                        paidRideIds.Add(rId);
+                    }
+                }
+                else if (p.PaymentMode == "ride_payment")
+                {
+                    // Net = 90%, Gross fare = Net / 0.90
+                    todaysPaymentsFaresSum += (p.Amount ?? 0) / 0.90m;
+                    var match = System.Text.RegularExpressions.Regex.Match(p.TransactionReference!, @"RIDE:(\d+)");
+                    if (match.Success && long.TryParse(match.Groups[1].Value, out var rId))
+                    {
+                        paidRideIds.Add(rId);
+                    }
+                }
+            }
+
+            var unrecordedCompletedFares = allFleetBookings
+                .Where(b => b.CT_BookingStatus == RideStatus.RideCompleted && 
+                            b.CreatedAt.HasValue && b.CreatedAt.Value.Date == todayUtc &&
+                            !paidRideIds.Contains(b.Id))
+                .Sum(b => b.FinalFare ?? b.EstimatedFare ?? 0);
+
+            var todaysFaresSum = todaysPaymentsFaresSum + unrecordedCompletedFares;
 
             // Pending Driver Relationship requests
             var pendingDriverRequestsCount = await _db.Notifications
@@ -282,9 +323,12 @@ namespace satguruApp.Service.Services
             if (transporter == null) return new TransporterAnalyticsViewModel();
 
             var vehicles = await _db.Vehicles.Where(v => v.TransporterId == transporter.Id && v.IsDeleted != true).Select(v => v.Id).ToListAsync();
+            var driverGuidIds = await _db.Drivers.Where(d => d.TransporterId == transporter.Id && d.IsDeleted != true).Select(d => d.Id).ToListAsync();
             
             var allBookings = await _db.Bookings
-                .Where(b => b.VehicleId.HasValue && vehicles.Contains(b.VehicleId.Value))
+                .Where(b => b.IsDeleted != true && 
+                           ((b.VehicleId.HasValue && vehicles.Contains(b.VehicleId.Value)) ||
+                            (b.DriverId.HasValue && driverGuidIds.Contains(b.DriverId.Value))))
                 .ToListAsync();
 
             var completedBookings = allBookings.Where(b => b.CT_BookingStatus == RideStatus.RideCompleted).ToList();
@@ -293,16 +337,44 @@ namespace satguruApp.Service.Services
             var today = DateTime.UtcNow.Date;
             var dailyBookings = completedBookings.Where(b => b.CreatedAt.HasValue && b.CreatedAt.Value.Date == today).ToList();
 
+            var activeBookings = allBookings.Where(b => b.CustomerId != null && 
+                (b.CT_BookingStatus == RideStatus.DriverAssigned || 
+                 b.CT_BookingStatus == RideStatus.DriverArriving || 
+                 b.CT_BookingStatus == RideStatus.RideStarted)).ToList();
+
             decimal totalDist = 0;
             decimal dailyDist = 0;
 
             foreach (var b in completedBookings)
             {
                 var dist = (decimal)CalculateDistanceKm(b.PickupLat, b.PickupLng, b.DropLat, b.DropLng);
-                totalDist += dist;
-                if (b.CreatedAt.HasValue && b.CreatedAt.Value.Date == today)
+                // Sanity check: valid trip distance within reasonable range (< 5000 km)
+                if (dist > 0 && dist < 5000)
                 {
-                    dailyDist += dist;
+                    totalDist += dist;
+                    if (b.CreatedAt.HasValue && b.CreatedAt.Value.Date == today)
+                    {
+                        dailyDist += dist;
+                    }
+                }
+            }
+
+            // Include live distance accumulated in currently active trips (with valid customers)
+            foreach (var b in activeBookings.Where(b => b.CustomerId != null && b.PickupLat.HasValue && b.PickupLng.HasValue && b.DropLat.HasValue && b.DropLng.HasValue))
+            {
+                var routeDist = (decimal)CalculateDistanceKm(b.PickupLat, b.PickupLng, b.DropLat, b.DropLng);
+                if (routeDist <= 0 || routeDist > 5000) continue;
+
+                if (b.CT_BookingStatus == RideStatus.RideStarted)
+                {
+                    var liveTrack = await _db.LiveVehicleTrackings.FirstOrDefaultAsync(t => t.BookingId == b.Id || (b.VehicleId.HasValue && t.VehicleId == b.VehicleId.Value));
+                    if (liveTrack != null && liveTrack.LastLatitude.HasValue && liveTrack.LastLongitude.HasValue)
+                    {
+                        var remaining = (decimal)CalculateDistanceKm(liveTrack.LastLatitude, liveTrack.LastLongitude, b.DropLat, b.DropLng);
+                        var progressedDist = Math.Max(0, Math.Min(routeDist, routeDist - remaining));
+                        totalDist += progressedDist;
+                        dailyDist += progressedDist;
+                    }
                 }
             }
 
@@ -395,13 +467,22 @@ namespace satguruApp.Service.Services
             {
                 bookingsByVehicle.TryGetValue(vehicle.Id, out var vehicleBookings);
                 var vehicleBookingList = vehicleBookings ?? new List<Booking>();
-                var completedVehicleBookings = vehicleBookingList.Where(b => b.CT_BookingStatus == RideStatus.RideCompleted).ToList();
+                var completedVehicleBookings = vehicleBookingList.Where(b => b.CustomerId != null && b.CT_BookingStatus == RideStatus.RideCompleted).ToList();
                 var activeBooking = vehicleBookingList
-                    .Where(b => b.CT_BookingStatus != RideStatus.RideCompleted && b.CT_BookingStatus != RideStatus.Cancelled)
+                    .Where(b => b.CustomerId != null 
+                                && b.CT_BookingStatus != RideStatus.RideCompleted 
+                                && b.CT_BookingStatus != RideStatus.Cancelled
+                                && b.CT_BookingStatus != RideStatus.RequestForRide)
                     .OrderByDescending(b => b.CreatedAt ?? DateTime.MinValue)
                     .FirstOrDefault();
 
-                Guid? driverId = activeBooking?.DriverId;
+                var standingAssignment = vehicleBookingList
+                    .Where(b => b.DriverId.HasValue && b.CustomerId == null && b.CT_BookingStatus != RideStatus.Cancelled)
+                    .OrderByDescending(b => b.CreatedAt ?? DateTime.MinValue)
+                    .FirstOrDefault();
+
+                var resolvedDriverBooking = activeBooking ?? standingAssignment;
+                Guid? driverId = resolvedDriverBooking?.DriverId;
                 var driver = driverId.HasValue && driverLookup.TryGetValue(driverId.Value, out var driverDetail) ? driverDetail : null;
                 List<Booking> driverBookings = null;
                 if (driverId.HasValue)
@@ -512,19 +593,34 @@ namespace satguruApp.Service.Services
                 .Select(g => new { UserId = g.Key, AvgScore = g.Average(r => r.Score ?? 0) })
                 .ToDictionaryAsync(x => x.UserId, x => x.AvgScore);
 
-            // Fetch active bookings for these drivers to check "On Ride" status and assigned vehicle
-            var activeBookings = await (from b in _db.Bookings
-                                        join v in _db.Vehicles on b.VehicleId equals v.Id
-                                        where b.DriverId != null 
-                                              && driverGuidIds.Contains(b.DriverId.Value)
-                                              && b.CT_BookingStatus != RideStatus.RideCompleted 
-                                              && b.CT_BookingStatus != RideStatus.Cancelled
-                                              && b.IsDeleted != true
-                                        select new { b.DriverId, b.Id, v.VehicleName, v.VehicleNumber }).ToListAsync();
+            // Fetch all bookings for these drivers to calculate active route and earnings
+            var driverBookings = await _db.Bookings
+                .Where(b => b.DriverId != null && driverGuidIds.Contains(b.DriverId.Value) && b.IsDeleted != true)
+                .OrderByDescending(b => b.CreatedAt ?? DateTime.MinValue)
+                .ToListAsync();
 
-            var activeBookingsDict = activeBookings
-                .GroupBy(x => x.DriverId)
-                .ToDictionary(g => g.Key, g => g.First());
+            var bookingsByDriver = driverBookings.GroupBy(b => b.DriverId.Value).ToDictionary(g => g.Key, g => g.ToList());
+
+            var vehicleIds = driverBookings.Where(b => b.VehicleId.HasValue).Select(b => b.VehicleId.Value).Distinct().ToList();
+            var vehicleLookup = await _db.Vehicles
+                .Where(v => vehicleIds.Contains(v.Id))
+                .ToDictionaryAsync(v => v.Id, v => v);
+
+            var trackings = await _db.LiveVehicleTrackings
+                .Where(t => t.IsDeleted != true)
+                .ToListAsync();
+
+            var trackingsByVehicle = trackings
+                .Where(t => t.VehicleId.HasValue)
+                .GroupBy(t => t.VehicleId.Value)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(t => t.LastUpdated).First());
+
+            var trackingsByUser = trackings
+                .Where(t => !string.IsNullOrEmpty(t.UserId))
+                .GroupBy(t => t.UserId)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(t => t.LastUpdated).First());
+
+            var today = DateTime.UtcNow.Date;
 
             return drivers.Select(x => {
                 var rating = 5.0; // Default
@@ -536,13 +632,59 @@ namespace satguruApp.Service.Services
                     }
                 }
 
-                activeBookingsDict.TryGetValue(x.dvr.Id, out var activeRide);
-                var hasActiveRide = activeRide != null;
+                bookingsByDriver.TryGetValue(x.dvr.Id, out var bList);
+                var allDriverBookings = bList ?? new List<Booking>();
+
+                // A real customer ride has a CustomerId, valid status (accepted, arriving, started), and is not completed/cancelled
+                var activeBooking = allDriverBookings
+                    .FirstOrDefault(b => b.CustomerId != null 
+                                         && b.CT_BookingStatus != RideStatus.RideCompleted 
+                                         && b.CT_BookingStatus != RideStatus.Cancelled
+                                         && b.CT_BookingStatus != RideStatus.RequestForRide);
+
+                var standingAssignment = allDriverBookings
+                    .Where(b => b.VehicleId.HasValue && b.CustomerId == null && b.CT_BookingStatus != RideStatus.Cancelled)
+                    .OrderByDescending(b => b.CreatedAt ?? DateTime.MinValue)
+                    .FirstOrDefault();
+
+                var completedBookings = allDriverBookings
+                    .Where(b => b.CustomerId != null && b.CT_BookingStatus == RideStatus.RideCompleted)
+                    .ToList();
+
+                var todaysEarnings = completedBookings
+                    .Where(b => b.CreatedAt.HasValue && b.CreatedAt.Value.Date == today)
+                    .Sum(b => b.FinalFare ?? b.EstimatedFare ?? 0);
+
+                var totalEarnings = completedBookings
+                    .Sum(b => b.FinalFare ?? b.EstimatedFare ?? 0);
+
+                var hasActiveRide = activeBooking != null;
+                var resolvedVehicleBooking = activeBooking ?? standingAssignment;
+                var activeVehicle = resolvedVehicleBooking?.VehicleId.HasValue == true && vehicleLookup.TryGetValue(resolvedVehicleBooking.VehicleId.Value, out var veh) ? veh : null;
 
                 var rideStatusStr = "Offline";
                 if (x.userInfo.IsOnline == true)
                 {
                     rideStatusStr = hasActiveRide ? "On Ride" : "Available";
+                }
+
+                // Resolve location from active vehicle tracking or direct user tracking
+                decimal? lat = null;
+                decimal? lng = null;
+                if (activeVehicle != null && trackingsByVehicle.TryGetValue(activeVehicle.Id, out var vTrack))
+                {
+                    lat = vTrack.LastLatitude;
+                    lng = vTrack.LastLongitude;
+                }
+                if ((lat == null || lng == null) && !string.IsNullOrEmpty(x.dvr.UserId) && trackingsByUser.TryGetValue(x.dvr.UserId, out var uTrack))
+                {
+                    lat = uTrack.LastLatitude;
+                    lng = uTrack.LastLongitude;
+                }
+                if ((lat == null || lng == null) && activeVehicle != null)
+                {
+                    lat = activeVehicle.CurrentLatitude;
+                    lng = activeVehicle.CurrentLongitude;
                 }
 
                 return new DriverViewModel
@@ -557,11 +699,23 @@ namespace satguruApp.Service.Services
                     ProfileStatus = x.dvr.ProfileStatus,
                     UserId = x.dvr.UserId,
                     IsOnline = x.userInfo.IsOnline,
-                    VehicleName = activeRide?.VehicleName,
-                    VehicleNumber = activeRide?.VehicleNumber,
+                    VehicleName = activeVehicle?.VehicleName,
+                    VehicleNumber = activeVehicle?.VehicleNumber,
+                    CT_VehicleType = activeVehicle?.CT_VehicleType,
+                    CTBodyType = activeVehicle?.CTBodyType,
+                    CTTyreType = activeVehicle?.CTTyreType,
                     DriverRating = Math.Round(rating, 1),
                     RideStatus = rideStatusStr,
-                    ActiveBookingId = activeRide?.Id
+                    ActiveBookingId = resolvedVehicleBooking?.Id,
+                    PickupAddress = activeBooking?.PickupAddress,
+                    DropAddress = activeBooking?.DropAddress,
+                    EstimatedFare = activeBooking?.EstimatedFare,
+                    FinalFare = activeBooking?.FinalFare,
+                    TodaysEarnings = todaysEarnings,
+                    TotalEarnings = totalEarnings,
+                    TotalTrips = completedBookings.Count,
+                    CurrentLatitude = lat,
+                    CurrentLongitude = lng
                 };
             }).ToList();
         }
@@ -575,9 +729,15 @@ namespace satguruApp.Service.Services
                 .Where(v => v.TransporterId == transporter.Id && v.IsDeleted != true)
                 .ToListAsync();
 
-            var typeIds = vehicles.Where(v => v.CT_VehicleType.HasValue).Select(v => v.CT_VehicleType.Value).Distinct().ToList();
+            var allTypeIds = vehicles
+                .SelectMany(v => new[] { v.CT_VehicleType, v.CTBodyType, v.CTTyreType })
+                .Where(id => id.HasValue)
+                .Select(id => id!.Value)
+                .Distinct()
+                .ToList();
+
             var commonTypeNames = await _db.CommonTypes
-                .Where(ct => typeIds.Contains(ct.Id))
+                .Where(ct => allTypeIds.Contains(ct.Id))
                 .ToDictionaryAsync(ct => ct.Id, ct => ct.Name);
 
             return vehicles.Select(v => new VehicleViewModel
@@ -587,6 +747,14 @@ namespace satguruApp.Service.Services
                 VehicleName = v.VehicleName,
                 CapacityTons = v.CapacityTons,
                 RCNumber = v.RCNumber,
+                InsuranceExpiry = v.InsuranceExpiry,
+                PermitExpiry = v.PermitExpiry,
+                RoadTaxExpiry = v.RoadTaxExpiry,
+                UploadPhoneUrl = v.UploadPhoneUrl,
+                CTBodyType = v.CTBodyType,
+                BodyTypeName = v.CTBodyType.HasValue && commonTypeNames.TryGetValue(v.CTBodyType.Value, out var btName) ? btName : null,
+                CTTyreType = v.CTTyreType,
+                TyreTypeName = v.CTTyreType.HasValue && commonTypeNames.TryGetValue(v.CTTyreType.Value, out var ttName) ? ttName : null,
                 IsAvailable = v.IsAvailable,
                 CT_VehicleType = v.CT_VehicleType,
                 VehicleTypeName = v.CT_VehicleType.HasValue && commonTypeNames.TryGetValue(v.CT_VehicleType.Value, out var name) ? name : "Unknown",

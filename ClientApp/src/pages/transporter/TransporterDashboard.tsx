@@ -15,14 +15,20 @@ import {
     Settings,
     Package,
     DollarSign,
-    Menu,
     Trash2,
     UserCheck,
     UserX,
     X,
     Loader2,
     CheckCircle,
-    AlertTriangle
+    AlertTriangle,
+    User,
+    CreditCard,
+    Bell,
+    Lock,
+    Navigation,
+    Route,
+    Phone
 } from 'lucide-react';
 import VehicleModal from '../../components/VehicleModal';
 import DriverModal from '../../components/DriverModal';
@@ -32,6 +38,9 @@ import TransporterReports from '../../components/TransporterReports';
 import TransporterFinance from '../../components/TransporterFinance';
 import ProfilePage from '../ProfilePage';
 import ChatPanel from '../../components/ChatPanel';
+import { useAuth } from '../../hooks/useAuth';
+import { disablePushNotifications } from '../../lib/firebaseMessaging';
+import { logoutFirebaseAuth } from '../../lib/firebaseAuth';
 
 type TransporterSummary = {
     totalFleet: number;
@@ -93,6 +102,7 @@ const TransporterDashboard = () => {
     const [fleetSummary, setFleetSummary] = useState<TransporterSummary>(emptySummary);
     const [fleetRows, setFleetRows] = useState<FleetRow[]>([]);
     const [isVehicleModalOpen, setIsVehicleModalOpen] = useState(false);
+    const [vehicleToEdit, setVehicleToEdit] = useState<any>(null);
     const [isDriverModalOpen, setIsDriverModalOpen] = useState(false);
     const [drivers, setDrivers] = useState<any[]>([]);
     const [vehicles, setVehicles] = useState<any[]>([]);
@@ -114,6 +124,7 @@ const TransporterDashboard = () => {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
     const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
+    const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
     const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
     const [selectedVehicle, setSelectedVehicle] = useState<any>(null);
     const [assigningDriver, setAssigningDriver] = useState(false);
@@ -124,11 +135,28 @@ const TransporterDashboard = () => {
     const [selectedVehicleForActions, setSelectedVehicleForActions] = useState<any>(null);
     const [isRouteModalOpen, setIsRouteModalOpen] = useState(false);
     const [selectedVehicleForDetail, setSelectedVehicleForDetail] = useState<any>(null);
+    const [selectedDriverForDetail, setSelectedDriverForDetail] = useState<any>(null);
     const [sosAlert, setSosAlert] = useState<{ driverName: string, id: number } | null>(null);
     const [driverAcceptAlert, setDriverAcceptAlert] = useState<{ driverName: string, bookingId: number, route: string, fare: number, id: number } | null>(null);
+    const [disputeAlert, setDisputeAlert] = useState<{ id: string; title: string; rideId: string; driverInfo: string; issueType: string; details: string } | null>(null);
     const [rideRequests, setRideRequests] = useState<any[]>([]);
     const [relationshipRequests, setRelationshipRequests] = useState<any[]>([]);
     const [outboundInvitations, setOutboundInvitations] = useState<any[]>([]);
+    const [dailyDistanceKm, setDailyDistanceKm] = useState<number>(0);
+    const [commonTypesMap, setCommonTypesMap] = useState<Record<number, string>>({});
+
+    useEffect(() => {
+        apiClient.get('/CommonType/getall').then(res => {
+            const list = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.data) ? res.data.data : []);
+            const map: Record<number, string> = {};
+            list.forEach((item: any) => {
+                const id = Number(item.id || item.Id);
+                const name = item.name || item.Name || '';
+                if (id && name) map[id] = name;
+            });
+            setCommonTypesMap(map);
+        }).catch(() => {});
+    }, []);
 
     const formatCurrency = (value: number = 0) => `₹ ${Number(value).toLocaleString('en-IN')}`;
 
@@ -138,42 +166,80 @@ const TransporterDashboard = () => {
         const intervalId = setInterval(async () => {
             try {
                 const res = await apiClient.get(`/Vehicle/shipmentDetail/${activeRequestModal.id}`);
-                const booking = res.data ?? {};
-                // If cT_BookingStatus is 2 (DriverAssigned), 3 (DriverArriving), 4 (RideStarted) or 5 (RideCompleted)
-                const status = booking.cT_BookingStatus ?? booking.CT_BookingStatus;
-                if (status >= 2 && status <= 5) {
-                    clearInterval(intervalId);
+                if (res.data?.driverStatus === 'Accepted' || res.data?.rideStatus === 'driver_assigned' || res.data?.rideStatus === 'driver_arriving') {
                     setModalStage('accepted');
+                    clearInterval(intervalId);
                 }
             } catch (err) {
-                console.error("Error polling booking status during assignment waiting:", err);
+                console.error("Error polling shipment detail:", err);
             }
-        }, 2500);
+        }, 2000);
 
         return () => clearInterval(intervalId);
     }, [activeRequestModal, modalStage]);
 
+    const { user: authUser, logout: authContextLogout } = useAuth();
+
     useEffect(() => {
-        const userStr = localStorage.getItem('user');
-        if (userStr) {
-            setCurrentUser(JSON.parse(userStr));
+        if (authUser) {
+            setCurrentUser(authUser);
+        } else {
+            const userStr = localStorage.getItem('user');
+            if (userStr) {
+                try {
+                    setCurrentUser(JSON.parse(userStr));
+                } catch {
+                    navigate('/login', { replace: true });
+                }
+            } else {
+                navigate('/login', { replace: true });
+            }
         }
-    }, []);
+    }, [authUser, navigate]);
+
+    // Fetch latest user details including profile pic
+    useEffect(() => {
+        const uid = currentUser?.userId || currentUser?.UserId || currentUser?.id;
+        if (!uid) return;
+        apiClient.get(`/User/getUserDetail/${uid}`).then((res) => {
+            if (res.data) {
+                setCurrentUser((prev: any) => ({
+                    ...prev,
+                    ...res.data,
+                    profilePic: res.data.profilePic || res.data.ProfilePic || prev?.profilePic || prev?.ProfilePic,
+                    company: res.data.company || res.data.Company || prev?.company,
+                    firstName: res.data.firstName || res.data.FirstName || prev?.firstName
+                }));
+            }
+        }).catch(() => {});
+    }, [currentUser?.userId, currentUser?.UserId]);
 
     const fetchDashboardData = useCallback(async () => {
         const userId = currentUser?.userId || currentUser?.UserId;
         if (!userId) return;
 
         try {
-            const [summaryRes, fleetRes, requestsRes] = await Promise.all([
+            const [summaryRes, fleetRes, requestsRes, analyticsRes] = await Promise.all([
                 apiClient.get('/Transport/getDashboardSummary', { params: { userId } }),
                 apiClient.get('/Transport/getFleetOverview', { params: { userId } }),
-                apiClient.get('/Vehicle/transporterRideRequests/' + userId).catch(() => ({ data: [] }))
+                apiClient.get('/Vehicle/transporterRideRequests/' + userId).catch(() => ({ data: [] })),
+                apiClient.get('/Transport/getTransporterAnalytics?userId=' + userId).catch(() => ({ data: null }))
             ]);
+
+            if (analyticsRes.data && typeof analyticsRes.data.dailyDistanceKm === 'number') {
+                setDailyDistanceKm(analyticsRes.data.dailyDistanceKm);
+            }
 
             const incoming = Array.isArray(requestsRes.data) ? requestsRes.data : [];
             setRideRequests(incoming);
-            if (incoming.length > 0 && !activeRequestModal) {
+            
+            // If currently open activeRequestModal is no longer in incoming (e.g. cancelled by customer/driver in real-time), dismiss it
+            if (activeRequestModal) {
+                const stillActive = incoming.some((r: any) => r.id === activeRequestModal.id);
+                if (!stillActive && modalStage === 'idle') {
+                    setActiveRequestModal(null);
+                }
+            } else if (incoming.length > 0) {
                 const unclaimed = incoming.find((r: any) => !dismissedBookingIds[r.id]);
                 if (unclaimed) {
                     setActiveRequestModal(unclaimed);
@@ -276,14 +342,29 @@ const TransporterDashboard = () => {
         }
     };
 
-    const handleUnassignDriver = async (activeBookingId: number) => {
+    const handleUnassignDriver = async (driverId: string, activeBookingId?: number, driverUserId?: string) => {
         if (!window.confirm("Are you sure you want to unassign this driver? This will cancel their active assignment.")) {
             return;
         }
+        const transporterUserId = currentUser?.userId || currentUser?.UserId || '';
         try {
-            await apiClient.patch(`/Vehicle/${activeBookingId}/rideStatus`, null, {
-                params: { status: 'cancelled' }
-            });
+            if (driverId && transporterUserId) {
+                await apiClient.post('/Transport/unassignDriver', null, {
+                    params: {
+                        transporterUserId,
+                        driverId
+                    }
+                });
+            } else if (activeBookingId) {
+                await apiClient.patch(`/Vehicle/${activeBookingId}/rideStatus`, null, {
+                    params: { status: 'cancelled' }
+                });
+            }
+
+            if (driverUserId) {
+                await apiClient.post(`/Transport/sendNotification?userId=${driverUserId}&title=${encodeURIComponent('Vehicle Unassigned')}&message=${encodeURIComponent('VEHICLE_UNASSIGN|Vehicle assignment has been removed by your transporter.')}`).catch(() => {});
+            }
+
             alert("Driver unassigned successfully!");
             fetchDashboardData();
             fetchFleetLists();
@@ -335,6 +416,74 @@ const TransporterDashboard = () => {
                                 messageText
                             });
                         }
+                    } else if (n.message && n.message.startsWith('DRIVER_ACCEPT_ORDER|')) {
+                        // Driver accepted assignment / order
+                        try {
+                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                            audio.volume = 0.7;
+                            audio.play().catch(() => {});
+                        } catch (e) {}
+
+                        const parts = n.message.split('|');
+                        const bookingId = Number(parts[1]);
+                        const driverName = parts[2] || 'Your Driver';
+                        const route = parts[3] || 'Pickup ➔ Drop';
+                        const fare = Number(parts[4]) || 0;
+                        
+                        setDriverAcceptAlert({
+                            driverName,
+                            bookingId,
+                            route,
+                            fare,
+                            id: n.id
+                        });
+
+                        if (activeRequestModal && activeRequestModal.id === bookingId) {
+                            setModalStage('accepted');
+                            setActiveRequestModal(null);
+                        }
+                        fetchDashboardData();
+                        fetchFleetLists();
+                    } else if (n.message && n.message.startsWith('DISPUTE_ALERT|')) {
+                        // Customer complaint / ride issue reported against fleet driver
+                        try {
+                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                            audio.volume = 0.7;
+                            audio.play().catch(() => {});
+                        } catch (e) {}
+
+                        const parts = n.message.split('|');
+                        const rideId = parts[1] || 'Ride';
+                        const driverInfo = parts[2] || '';
+                        const issueType = parts[3] || 'Complaint';
+                        const details = parts.slice(4).join('|') || '';
+
+                        setDisputeAlert({
+                            id: n.id,
+                            title: n.title || 'Customer Complaint Reported',
+                            rideId,
+                            driverInfo,
+                            issueType,
+                            details
+                        });
+                    } else if (n.message && n.message.startsWith('RIDE_CANCELLED|')) {
+                        // Ride cancelled notification
+                        try {
+                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+                            audio.volume = 0.8;
+                            audio.play().catch(() => {});
+                        } catch (e) {}
+
+                        const parts = n.message.split('|');
+                        const info = parts[2] || parts[1] || 'Ride cancelled';
+                        setChatToast({
+                            id: n.id,
+                            senderName: '⚠️ Ride Cancelled',
+                            messageText: info
+                        });
+
+                        fetchDashboardData();
+                        fetchFleetLists();
                     }
                 }
             });
@@ -345,9 +494,7 @@ const TransporterDashboard = () => {
         } catch (err) {
             console.error("Failed to fetch relationship notifications:", err);
         }
-    }, [currentUser]);
-
-
+    }, [currentUser, activeRequestModal, fetchDashboardData, fetchFleetLists]);
 
     const handleAcceptRelationship = async (notifId: string) => {
         try {
@@ -481,42 +628,41 @@ const TransporterDashboard = () => {
         }
     }, [relationshipRequests]);
 
-    const liveVehiclesReporting = useMemo(
-        () => fleetRows.filter((row) => typeof row.latitude === 'number' && typeof row.longitude === 'number').length,
-        [fleetRows]
-    );
-
-    const assignedDriversCount = useMemo(
-        () => fleetRows.filter((row) => row.driverName && row.driverName !== 'Unassigned').length,
-        [fleetRows]
-    );
-
-    const latestLivePing = useMemo<Date | null>(() => {
-        let latest: Date | null = null;
-        fleetRows.forEach((row) => {
-            if (!row.liveUpdatedAt) return;
-            const parsed = new Date(row.liveUpdatedAt);
-            if (isNaN(parsed.getTime())) return;
-            if (latest === null || parsed > latest) {
-                latest = parsed;
-            }
+    // Drivers live map points (1 indicator for each driver in transporter fleet)
+    const mapDriverPoints = useMemo(() => {
+        return drivers.map((d: any) => {
+            const hasValidCoords = typeof d.currentLatitude === 'number' && typeof d.currentLongitude === 'number' && d.currentLatitude !== 0 && d.currentLongitude !== 0;
+            return {
+                driverId: d.id || d.userId,
+                driverName: d.name || (d.firstName && d.lastName ? `${d.firstName} ${d.lastName}` : d.userName || 'Driver'),
+                driverPhone: d.phone || d.mobile || '',
+                vehicleName: d.vehicleName,
+                vehicleNumber: d.vehicleNumber,
+                rideStatus: d.rideStatus || (d.isOnline ? 'Available' : 'Offline'),
+                isOnline: !!d.isOnline,
+                latitude: hasValidCoords ? Number(d.currentLatitude) : 28.6139, // Default to New Delhi if pending first GPS ping
+                longitude: hasValidCoords ? Number(d.currentLongitude) : 77.2090,
+                hasLiveGps: hasValidCoords
+            };
         });
-        return latest;
-    }, [fleetRows]);
+    }, [drivers]);
 
-    const lastPingLabel = latestLivePing
-        ? latestLivePing.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })
-        : 'No live ping yet';
+    const liveDriversCount = useMemo(() => drivers.length, [drivers]);
 
-    const handleLogout = () => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        navigate('/login');
+    const handleLogout = async () => {
+        try {
+            await disablePushNotifications();
+            await logoutFirebaseAuth();
+        } catch (error) {
+            console.error('Logout cleanup failed', error);
+        }
+        authContextLogout();
+        navigate('/login', { replace: true });
     };
 
     const stats = [
         { label: "Today's Earning", value: formatCurrency(fleetSummary.todaysEarnings), icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100' },
-        { label: "Today's Shipment", value: fleetSummary.todaysShipments, icon: Package, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100' },
+        { label: "Daily Distance", value: `${dailyDistanceKm} km`, icon: Navigation, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100' },
         { label: 'Active Shipment', value: fleetSummary.activeShipments, icon: Truck, color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-100' },
         { label: 'Online Drivers', value: fleetSummary.onlineDrivers, icon: UserCheck, color: 'text-teal-600', bg: 'bg-teal-50', border: 'border-teal-100' },
         { label: 'Offline Drivers', value: fleetSummary.offlineDrivers, icon: UserX, color: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-100' },
@@ -531,6 +677,8 @@ const TransporterDashboard = () => {
         if (s.includes('cancel') || s.includes('reject')) return 'bg-red-50 text-red-700 border-red-200';
         return 'bg-slate-100 text-slate-700 border-slate-300';
     };
+
+    if (!currentUser) return null;
 
     return (
         <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
@@ -620,14 +768,29 @@ const TransporterDashboard = () => {
                     </nav>
 
                     <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200">
-                            SL
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shrink-0">
+                            {currentUser?.profilePic || currentUser?.ProfilePic ? (
+                                <img 
+                                    src={
+                                        (currentUser.profilePic || currentUser.ProfilePic).startsWith('http') || (currentUser.profilePic || currentUser.ProfilePic).startsWith('data:')
+                                            ? (currentUser.profilePic || currentUser.ProfilePic)
+                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${(currentUser.profilePic || currentUser.ProfilePic).startsWith('/') ? '' : '/'}${currentUser.profilePic || currentUser.ProfilePic}`
+                                    } 
+                                    alt="Transporter" 
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                        (e.target as HTMLElement).style.display = 'none';
+                                    }}
+                                />
+                            ) : (
+                                <span>{currentUser?.company ? currentUser.company.substring(0, 2).toUpperCase() : (currentUser?.firstName ? currentUser.firstName.substring(0, 2).toUpperCase() : 'TL')}</span>
+                            )}
                         </div>
                         <div className="flex-1 min-w-0">
-                            <p className="text-sm font-bold text-slate-900 truncate">{currentUser?.company || currentUser?.firstName || 'Satguru Logistics'}</p>
-                            <p className="text-xs text-slate-500 truncate">{currentUser?.roleName || 'Admin Account'}</p>
+                            <p className="text-sm font-bold text-slate-900 truncate">{currentUser?.company || currentUser?.firstName || 'Transporter Fleet'}</p>
+                            <p className="text-xs text-slate-500 truncate">{currentUser?.roleName || 'Transporter'}</p>
                         </div>
-                        <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50">
+                        <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors h-8 w-8 flex items-center justify-center rounded-lg hover:bg-red-50 cursor-pointer">
                             <LogOut className="h-4 w-4" />
                         </button>
                     </div>
@@ -643,35 +806,123 @@ const TransporterDashboard = () => {
                     </div>
                 )}
 
-                {/* Mobile Header Bar */}
-                <header className="md:hidden h-16 bg-slate-900 text-white flex items-center justify-between px-4 sticky top-0 z-20 shadow-md">
-                    <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-white/10 rounded-lg">
-                        <Menu className="h-6 w-6 text-white" />
-                    </button>
-                    <span className="font-extrabold tracking-tight">Navgatix</span>
-                    <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 text-sm">
-                        SL
+                {/* Mobile Header Bar - Clean and Wide */}
+                <header className="md:hidden h-16 bg-slate-900 text-white flex items-center justify-between px-4 sticky top-0 z-40 shadow-md relative">
+                    <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl flex items-center justify-center shadow-md">
+                            <Truck className="text-white h-4 w-4" />
+                        </div>
+                        <span className="font-extrabold tracking-tight text-xl">Navgatix</span>
+                    </div>
+                    
+                    {/* Circle Avatar with Dropdown Toggle */}
+                    <div className="relative">
+                        <button 
+                            onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
+                            title="Account & Settings"
+                            className="w-9 h-9 rounded-full bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white font-black border-2 border-white/40 shadow-md active:scale-90 transition-all text-xs cursor-pointer"
+                        >
+                            {currentUser?.firstName?.charAt(0) || currentUser?.company?.charAt(0) || 'T'}
+                        </button>
+
+                        {/* Top-Right Profile Dropdown Menu */}
+                        {profileDropdownOpen && (
+                            <>
+                                <div 
+                                    className="fixed inset-0 z-40" 
+                                    onClick={() => setProfileDropdownOpen(false)}
+                                />
+                                <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-slate-100 py-2 z-50 animate-in fade-in slide-in-from-top-2 duration-150 text-slate-800">
+                                    <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/50 rounded-t-2xl">
+                                        <p className="text-xs font-bold text-slate-900 truncate">
+                                            {currentUser?.firstName || currentUser?.company || 'Satguru Logistics'}
+                                        </p>
+                                        <p className="text-[11px] text-slate-500 truncate">
+                                            {currentUser?.email || 'Transporter Account'}
+                                        </p>
+                                    </div>
+
+                                    <div className="py-1">
+                                        <button
+                                            onClick={() => {
+                                                setSearchParams({ tab: 'profile' });
+                                                setActiveTab('settings');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors text-left"
+                                        >
+                                            <User className="h-4 w-4 text-emerald-600" /> Profile Info
+                                        </button>
+
+                                        <button
+                                            onClick={() => {
+                                                setSearchParams({ tab: 'payments' });
+                                                setActiveTab('settings');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors text-left"
+                                        >
+                                            <CreditCard className="h-4 w-4 text-emerald-600" /> Wallet & Payments
+                                        </button>
+
+                                        <button
+                                            onClick={() => {
+                                                setSearchParams({ tab: 'preferences' });
+                                                setActiveTab('settings');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors text-left"
+                                        >
+                                            <Bell className="h-4 w-4 text-emerald-600" /> Preferences & Alerts
+                                        </button>
+
+                                        <button
+                                            onClick={() => {
+                                                setSearchParams({ tab: 'security' });
+                                                setActiveTab('settings');
+                                                setProfileDropdownOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors text-left"
+                                        >
+                                            <Lock className="h-4 w-4 text-emerald-600" /> Security & Access
+                                        </button>
+                                    </div>
+
+                                    <div className="border-t border-slate-100 pt-1">
+                                        <button
+                                            onClick={() => {
+                                                setProfileDropdownOpen(false);
+                                                handleLogout();
+                                            }}
+                                            className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-red-600 hover:bg-red-50 transition-colors text-left"
+                                        >
+                                            <LogOut className="h-4 w-4" /> Logout
+                                        </button>
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </header>
 
-                <div className={`flex-1 overflow-y-auto relative max-w-7xl w-full mx-auto ${activeTab === 'settings' ? 'pt-0 px-3 pb-8 md:p-8' : 'p-6 md:p-8'}`}>
+                <div className={`flex-1 overflow-y-auto relative max-w-7xl w-full mx-auto pb-24 md:pb-8 ${activeTab === 'settings' ? 'pt-0 px-2 sm:px-3 md:p-8' : 'px-3 sm:px-4 py-4 md:p-8'}`}>
 
                     <div className="relative z-10">
                     {activeTab === 'overview' && (
                         <>
-                            <header className="flex flex-col md:flex-row md:justify-between md:items-end mb-10 gap-4">
+                            <header className="flex flex-col md:flex-row md:justify-between md:items-end mb-6 md:mb-10 gap-4">
                                 <div className="text-white">
                                     <p className="text-indigo-200 font-medium tracking-wide text-xs md:text-sm mb-1 uppercase">{activeTab}</p>
                                     <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Hii, {currentUser?.firstName || currentUser?.company || 'Satguru Logistics'}</h1>
                                 </div>
-                                <div className="flex gap-3 w-full md:w-auto">
-                                    <button onClick={() => setIsDriverModalOpen(true)} className="flex-1 md:flex-initial bg-white text-slate-900 hover:bg-slate-50 px-4 py-2.5 rounded-lg border border-white/20 font-semibold shadow-lg text-sm flex items-center justify-center gap-2 transition-colors">
+                                <div className="flex gap-2.5 w-full md:w-auto">
+                                    <button onClick={() => setIsDriverModalOpen(true)} className="flex-1 md:flex-initial bg-white text-slate-900 hover:bg-slate-50 px-3.5 py-2.5 rounded-xl border border-white/20 font-semibold shadow-lg text-xs md:text-sm flex items-center justify-center gap-2 transition-colors">
                                         <Plus className="h-4 w-4" />
                                         Add Driver
                                     </button>
                                     <button 
                                         onClick={() => setIsVehicleModalOpen(true)}
-                                        className="flex-1 md:flex-initial bg-primary-600 hover:bg-primary-500 text-white px-4 py-2.5 rounded-lg font-semibold shadow-lg shadow-primary-600/30 text-sm flex items-center justify-center gap-2 transition-colors border border-primary-500"
+                                        className="flex-1 md:flex-initial bg-primary-600 hover:bg-primary-500 text-white px-3.5 py-2.5 rounded-xl font-semibold shadow-lg shadow-primary-600/30 text-xs md:text-sm flex items-center justify-center gap-2 transition-colors border border-primary-500"
                                     >
                                         <Plus className="h-4 w-4" />
                                         New Vehicle
@@ -679,17 +930,17 @@ const TransporterDashboard = () => {
                                 </div>
                             </header>
 
-                            {/* Stats Grid */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5 mb-8">
+                            {/* Stats Grid - Responsive layout with full text visibility */}
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 md:gap-5 mb-6 md:mb-8">
                                 {stats.map((stat, i) => (
-                                    <div key={i} className={`premium-card p-6 flex items-start justify-between border-b-4 ${stat.border} bg-white rounded-2xl shadow-sm`}>
-                                        <div>
-                                            <p className="text-sm font-semibold text-slate-500 mb-1">{stat.label}</p>
-                                            <h3 className="text-3xl font-black text-slate-900 tracking-tight">{stat.value}</h3>
+                                    <div key={i} className={`premium-card p-3 sm:p-4 flex flex-col justify-between border-b-4 ${stat.border} bg-white rounded-2xl shadow-sm hover:shadow-md transition-shadow min-h-[115px]`}>
+                                        <div className="flex items-start justify-between gap-2">
+                                            <p className="text-xs font-bold text-slate-600 leading-snug break-words flex-1">{stat.label}</p>
+                                            <div className={`${stat.bg} ${stat.color} p-1.5 sm:p-2 rounded-xl flex-shrink-0`}>
+                                                <stat.icon className="h-4 w-4" />
+                                            </div>
                                         </div>
-                                        <div className={`${stat.bg} ${stat.color} p-3.5 rounded-2xl`}>
-                                            <stat.icon className="h-6 w-6" />
-                                        </div>
+                                        <h3 className="text-base sm:text-lg md:text-xl font-black text-slate-900 tracking-tight mt-2 truncate" title={String(stat.value)}>{stat.value}</h3>
                                     </div>
                                 ))}
                             </div>
@@ -698,62 +949,30 @@ const TransporterDashboard = () => {
 
                     {activeTab === 'overview' && (
                         <>
-                            {/* Map & Live Signals */}
-                            <div className="grid gap-6 lg:grid-cols-[2fr,1fr] mb-8">
-                                <div className="premium-card p-6 bg-white shadow-sm border border-slate-100 rounded-2xl">
-                                    <div className="flex justify-between items-start gap-4 mb-4">
+                            {/* Map - Full wide width */}
+                            <div className="w-full mb-6 md:mb-8">
+                                <div className="premium-card p-3.5 sm:p-4 md:p-6 bg-white shadow-sm border border-slate-100 rounded-2xl w-full">
+                                    <div className="flex justify-between items-start gap-4 mb-3 md:mb-4">
                                         <div>
-                                            <h3 className="text-lg font-bold text-slate-900">Live Fleet Map</h3>
-                                            <p className="text-sm text-slate-500">Real-time coordinates from active vehicles.</p>
+                                            <h3 className="text-base md:text-lg font-bold text-slate-900">Live Fleet Map</h3>
+                                            <p className="text-xs md:text-sm text-slate-500">Real-time driver & vehicle fleet indicators.</p>
                                         </div>
-                                        <span className="text-xs font-bold bg-slate-100 text-slate-600 px-3 py-1 rounded-full uppercase tracking-wider">{liveVehiclesReporting} Live</span>
+                                        <span className="text-[11px] md:text-xs font-bold bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full uppercase tracking-wider border border-emerald-200">{liveDriversCount} {liveDriversCount === 1 ? 'Driver' : 'Drivers'}</span>
                                     </div>
-                                    <div className="h-[400px] rounded-xl overflow-hidden border border-slate-200">
-                                        <LiveFleetMap vehicles={fleetRows} />
-                                    </div>
-                                </div>
-
-                                <div className="space-y-6">
-                                    <div className="premium-card p-6 bg-white shadow-sm border border-slate-100 rounded-2xl">
-                                        <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-                                            <Clock className="h-5 w-5 text-indigo-600" />
-                                            Signals
-                                        </h3>
-                                        <div className="space-y-4">
-                                            <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                                                <span className="text-sm text-slate-500">Drivers Assigned</span>
-                                                <span className="font-bold text-slate-900">{assignedDriversCount}</span>
-                                            </div>
-                                            <div className="flex justify-between items-center p-3 bg-emerald-50 rounded-xl text-emerald-700">
-                                                <span className="text-sm">Last Ping</span>
-                                                <span className="font-bold">{lastPingLabel}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div className="premium-card p-6 bg-white shadow-sm border border-slate-100 rounded-2xl">
-                                        <h3 className="text-lg font-bold text-slate-900 mb-4">Financial Summary</h3>
-                                        <div className="space-y-3">
-                                            <div>
-                                                <p className="text-xs text-slate-400 font-bold uppercase mb-1">Total Earnings</p>
-                                                <p className="text-2xl font-black text-slate-900">{formatCurrency(fleetSummary.totalEarnings)}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-xs text-slate-400 font-bold uppercase mb-1">Resolved Rides</p>
-                                                <p className="text-2xl font-black text-slate-900">{fleetSummary.totalRides}</p>
-                                            </div>
-                                        </div>
+                                    <div className="h-[340px] md:h-[450px] w-full rounded-xl overflow-hidden border border-slate-200">
+                                        <LiveFleetMap drivers={mapDriverPoints} />
                                     </div>
                                 </div>
                             </div>
 
+
                             {/* Operations Table */}
-                            <div className="premium-card overflow-hidden bg-white rounded-2xl shadow-sm border border-slate-100">
-                                <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                                    <h2 className="text-lg font-bold text-slate-900">Current Fleet Operations</h2>
+                            <div className="premium-card overflow-hidden bg-white rounded-2xl shadow-sm border border-slate-100 mb-6 md:mb-8">
+                                <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                                    <h2 className="text-base md:text-lg font-bold text-slate-900">Current Fleet Operations</h2>
                                     <div className="relative">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 h-4 w-4" />
-                                        <input type="text" placeholder="Filter fleet..." className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-64" />
+                                        <input type="text" placeholder="Filter fleet..." className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-full sm:w-64" />
                                     </div>
                                 </div>
                                 <div className="overflow-x-auto">
@@ -934,11 +1153,24 @@ const TransporterDashboard = () => {
                                         <tbody className="divide-y divide-slate-100 text-slate-600 font-medium">
                                             {drivers.length > 0 ? drivers.map((d) => (
                                                 <tr key={d.id} className="hover:bg-slate-50 transition-colors">
-                                                    <td className="px-6 py-4 flex items-center gap-3">
-                                                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden">
-                                                            {d.profilePic ? <img src={d.profilePic} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
-                                                        </div>
-                                                        <span className="text-slate-900 font-bold">{d.name}</span>
+                                                    <td className="px-6 py-4">
+                                                        <button 
+                                                            type="button"
+                                                            onClick={() => setSelectedDriverForDetail(d)}
+                                                            className="flex items-center gap-3 text-left w-full cursor-pointer group bg-transparent border-0 p-0 focus:outline-none"
+                                                            title="Click to view Driver Profile details"
+                                                        >
+                                                            <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden ring-2 ring-slate-200 group-hover:ring-indigo-500 transition-all shrink-0">
+                                                                {d.profilePic ? <img src={d.profilePic} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
+                                                            </div>
+                                                            <div className="flex flex-col">
+                                                                <span className="text-slate-900 font-extrabold group-hover:text-indigo-600 transition-colors flex items-center gap-1.5 text-sm">
+                                                                    {d.name}
+                                                                    <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-1.5 py-0.5 rounded border border-indigo-100 group-hover:bg-indigo-600 group-hover:text-white transition-colors">Details ➔</span>
+                                                                </span>
+                                                                <span className="text-[11px] text-slate-400 font-normal">{d.phone || d.mobile || 'N/A'}</span>
+                                                            </div>
+                                                        </button>
                                                     </td>
                                                     <td className="px-6 py-4">{d.phone || d.mobile || 'N/A'}</td>
                                                     <td className="px-6 py-4 text-amber-500 font-bold">⭐ {d.driverRating ?? '5.0'}</td>
@@ -983,9 +1215,9 @@ const TransporterDashboard = () => {
                                                             >
                                                                 💬 Chat
                                                             </button>
-                                                            {d.activeBookingId ? (
+                                                            {d.vehicleNumber || d.vehicleName || d.activeBookingId ? (
                                                                 <button
-                                                                    onClick={() => handleUnassignDriver(d.activeBookingId)}
+                                                                    onClick={() => handleUnassignDriver(d.id || d.Id, d.activeBookingId, d.userId || d.UserId)}
                                                                     className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-2 py-1.5 rounded-lg border border-rose-200 text-xs font-bold transition-colors cursor-pointer"
                                                                     title="Unassign Vehicle"
                                                                 >
@@ -1071,13 +1303,44 @@ const TransporterDashboard = () => {
                                                 </td>
                                                 <td className="px-6 py-4">{v.vehicleName}</td>
                                                 <td className="px-6 py-4">{v.vehicleTypeName}</td>
-                                                <td className="px-6 py-4">{v.capacityTons} Tons</td>
                                                 <td className="px-6 py-4">
-                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] uppercase font-black border ${v.isAvailable ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                                                        {v.isAvailable ? 'Available' : 'Busy'}
-                                                    </span>
+                                                    {(() => {
+                                                        const fleetItem = fleetRows.find(f => String(f.vehicleId) === String(v.id));
+                                                        const hasDriver = fleetItem && fleetItem.driverName && fleetItem.driverName !== 'Unassigned';
+                                                        const isOnRide = fleetItem && fleetItem.rideStatus === 'On Ride';
+                                                        
+                                                        if (isOnRide) {
+                                                            return (
+                                                                <span className="px-2 py-0.5 rounded-full text-[10px] uppercase font-black border bg-amber-50 text-amber-700 border-amber-200">
+                                                                    On Ride
+                                                                </span>
+                                                            );
+                                                        }
+                                                        if (hasDriver) {
+                                                            return (
+                                                                <span className="px-2 py-0.5 rounded-full text-[10px] uppercase font-black border bg-emerald-50 text-emerald-700 border-emerald-200" title={`Assigned to ${fleetItem.driverName}`}>
+                                                                    Assigned
+                                                                </span>
+                                                            );
+                                                        }
+                                                        return (
+                                                            <span className="px-2 py-0.5 rounded-full text-[10px] uppercase font-black border bg-slate-100 text-slate-600 border-slate-200">
+                                                                Unassigned
+                                                            </span>
+                                                        );
+                                                    })()}
                                                 </td>
                                                 <td className="px-6 py-4 text-right flex justify-end gap-2 items-center">
+                                                    <button 
+                                                        onClick={() => {
+                                                            setVehicleToEdit(v);
+                                                            setIsVehicleModalOpen(true);
+                                                        }} 
+                                                        className="text-primary-600 hover:text-primary-800 hover:bg-primary-50 px-2.5 py-1.5 rounded-lg border border-primary-200 text-xs font-bold transition-colors cursor-pointer"
+                                                        title="Edit Vehicle & Upload Documents"
+                                                     >
+                                                        Edit
+                                                     </button>
                                                     <button 
                                                         onClick={() => setSelectedVehicleForDetail(v)} 
                                                         className="text-indigo-650 hover:text-indigo-800 hover:bg-indigo-50 px-2.5 py-1.5 rounded-lg border border-indigo-200 text-xs font-bold transition-colors cursor-pointer"
@@ -1129,26 +1392,43 @@ const TransporterDashboard = () => {
 
                     {activeTab === 'settings' && (
                         <div className="pb-20">
-                            <ProfilePage />
+                            <ProfilePage isEmbedded={true} />
                         </div>
                     )}
                 </div>
             </div>
         </main>
 
-            <DriverModal isOpen={isDriverModalOpen} onClose={() => setIsDriverModalOpen(false)} onSuccess={() => { fetchDashboardData(); fetchFleetLists(); }} transporterId={currentUser?.userId || currentUser?.id || ''} />
-            <VehicleModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSuccess={() => { fetchDashboardData(); fetchFleetLists(); }} userId={currentUser?.userId || currentUser?.id || ''} />
+            <DriverModal 
+                isOpen={isDriverModalOpen} 
+                onClose={() => setIsDriverModalOpen(false)} 
+                onSuccess={() => { fetchDashboardData(); fetchFleetLists(); }} 
+                transporterUserId={currentUser?.userId || currentUser?.UserId || currentUser?.id || ''} 
+            />
+            <VehicleModal 
+                isOpen={isVehicleModalOpen} 
+                onClose={() => { setIsVehicleModalOpen(false); setVehicleToEdit(null); }} 
+                onSuccess={() => { fetchDashboardData(); fetchFleetLists(); }} 
+                userId={currentUser?.userId || currentUser?.id || ''} 
+                initialVehicleData={vehicleToEdit}
+            />
 
             {/* Assign Driver Modal */}
             {isAssignModalOpen && selectedVehicle && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div 
+                    onClick={() => { setIsAssignModalOpen(false); setSelectedVehicle(null); }}
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200 cursor-default"
+                    >
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
                                 <h3 className="font-extrabold text-slate-900 text-lg">Assign Driver</h3>
                                 <p className="text-xs text-slate-500">Vehicle: <span className="font-bold text-primary-600">{selectedVehicle.vehicleNumber}</span></p>
                             </div>
-                            <button onClick={() => { setIsAssignModalOpen(false); setSelectedVehicle(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors">
+                            <button onClick={() => { setIsAssignModalOpen(false); setSelectedVehicle(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors cursor-pointer">
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
@@ -1157,23 +1437,31 @@ const TransporterDashboard = () => {
                                 <p className="text-center text-slate-400 italic text-sm py-8">No drivers registered in your fleet.</p>
                             ) : (
                                 drivers.map(drv => {
-                                    const driverName = drv.firstName && drv.lastName ? `${drv.firstName} ${drv.lastName}` : drv.userName || 'Driver';
+                                    const driverName = drv.name || (drv.firstName && drv.lastName ? `${drv.firstName} ${drv.lastName}` : drv.userName || drv.email || 'Driver');
+                                    const driverPhone = drv.phone || drv.phoneNumber || drv.mobile || drv.email || '';
                                     return (
                                         <button
-                                            key={drv.id}
+                                            key={drv.id || drv.userId}
                                             onClick={async () => {
-                                                if (!window.confirm(`Are you sure you want to assign ${driverName} to Vehicle ${selectedVehicle.vehicleNumber}?`)) {
+                                                const existingVehStr = drv.vehicleName ? `${drv.vehicleName} (${drv.vehicleNumber || ''})` : (drv.vehicleNumber ? drv.vehicleNumber : '');
+                                                let confirmMsg = `Are you sure you want to assign ${driverName} to Vehicle ${selectedVehicle.vehicleNumber}?`;
+                                                
+                                                if (existingVehStr && existingVehStr !== 'None') {
+                                                    confirmMsg = `⚠️ REASSIGNMENT WARNING:\n\nDriver "${driverName}" is currently already assigned to Vehicle "${existingVehStr}".\n\nAssigning to "${selectedVehicle.vehicleNumber}" will automatically unassign "${existingVehStr}" and link this driver to "${selectedVehicle.vehicleNumber}".\n\nDo you want to proceed?`;
+                                                }
+
+                                                if (!window.confirm(confirmMsg)) {
                                                     return;
                                                 }
                                                 setAssigningDriver(true);
                                                 try {
                                                     await apiClient.post('/Vehicle/bookVehicle', {
                                                         VehicleId: selectedVehicle.vehicleId || selectedVehicle.id,
-                                                        DriverId: drv.userId || drv.UserId || drv.id,
+                                                        DriverId: drv.id || drv.userId || drv.UserId,
                                                         CT_BookingStatus: 2 // RideStatus.DriverAssigned
                                                     });
 
-                                                    const drvUserId = drv.userId || drv.UserId;
+                                                    const drvUserId = drv.userId || drv.UserId || drv.id;
                                                     if (drvUserId) {
                                                         const vehicleNameStr = selectedVehicle.vehicleNumber ? `${selectedVehicle.vehicleName || ''} (${selectedVehicle.vehicleNumber})` : 'a vehicle';
                                                         await apiClient.post(`/Transport/sendNotification?userId=${drvUserId}&title=${encodeURIComponent('Vehicle Assigned')}&message=${encodeURIComponent(`VEHICLE_ASSIGN|${vehicleNameStr}`)}`).catch(() => {});
@@ -1196,7 +1484,7 @@ const TransporterDashboard = () => {
                                         >
                                             <div>
                                                 <p className="font-bold text-slate-900 text-sm">{driverName}</p>
-                                                <p className="text-xs text-slate-500">{drv.phoneNumber || drv.email}</p>
+                                                <p className="text-xs text-slate-500">{driverPhone}</p>
                                             </div>
                                             <span className="text-xs font-bold text-primary-600 bg-primary-50 border border-primary-100 px-2.5 py-1 rounded-lg">Assign</span>
                                         </button>
@@ -1210,8 +1498,14 @@ const TransporterDashboard = () => {
 
             {/* Driver-First Vehicle Assignment Modal */}
             {isReverseAssignModalOpen && selectedDriverForReverseAssign && (
-                <div className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-205">
+                <div 
+                    onClick={() => { setIsReverseAssignModalOpen(false); setSelectedDriverForReverseAssign(null); }}
+                    className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-205 cursor-default"
+                    >
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
                                 <h3 className="font-extrabold text-slate-900 text-lg">Assign Vehicle</h3>
@@ -1241,14 +1535,23 @@ const TransporterDashboard = () => {
                                         <button
                                             key={veh.id}
                                             onClick={async () => {
-                                                if (!window.confirm(`Are you sure you want to assign Vehicle ${veh.vehicleNumber} to ${selectedDriverForReverseAssign.name}?`)) {
+                                                const existingVehStr = selectedDriverForReverseAssign.vehicleName 
+                                                    ? `${selectedDriverForReverseAssign.vehicleName} (${selectedDriverForReverseAssign.vehicleNumber || ''})` 
+                                                    : (selectedDriverForReverseAssign.vehicleNumber ? selectedDriverForReverseAssign.vehicleNumber : '');
+                                                
+                                                let confirmMsg = `Are you sure you want to assign Vehicle ${veh.vehicleNumber} to ${selectedDriverForReverseAssign.name}?`;
+                                                if (existingVehStr && existingVehStr !== 'None') {
+                                                    confirmMsg = `⚠️ REASSIGNMENT WARNING:\n\nDriver "${selectedDriverForReverseAssign.name}" is already linked to Vehicle "${existingVehStr}".\n\nAssigning to "${veh.vehicleNumber}" will automatically unassign "${existingVehStr}" and assign "${veh.vehicleNumber}".\n\nDo you want to proceed?`;
+                                                }
+
+                                                if (!window.confirm(confirmMsg)) {
                                                     return;
                                                 }
                                                 setAssigningVehicle(true);
                                                 try {
                                                     await apiClient.post('/Vehicle/bookVehicle', {
                                                         VehicleId: veh.id,
-                                                        DriverId: selectedDriverForReverseAssign.userId || selectedDriverForReverseAssign.UserId || selectedDriverForReverseAssign.id,
+                                                        DriverId: selectedDriverForReverseAssign.id || selectedDriverForReverseAssign.userId || selectedDriverForReverseAssign.UserId,
                                                         CT_BookingStatus: 2 // RideStatus.DriverAssigned
                                                     });
 
@@ -1287,11 +1590,164 @@ const TransporterDashboard = () => {
                 </div>
             )}
 
+            {/* Driver Details Modal Card */}
+            {selectedDriverForDetail && (
+                <div 
+                    onClick={() => setSelectedDriverForDetail(null)}
+                    className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200 cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200 cursor-default"
+                    >
+                        {/* Header Banner */}
+                        <div className="bg-slate-900 text-white px-6 py-5 flex items-center justify-between relative">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center overflow-hidden border border-white/20">
+                                    {selectedDriverForDetail.profilePic ? (
+                                        <img src={selectedDriverForDetail.profilePic} alt="" className="w-full h-full object-cover" />
+                                    ) : (
+                                        <Users className="h-5 w-5 text-indigo-300" />
+                                    )}
+                                </div>
+                                <div>
+                                    <span className="text-[10px] uppercase font-black tracking-widest text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded-full border border-indigo-500/20">
+                                        DRIVER PROFILE
+                                    </span>
+                                    <h3 className="text-lg font-black mt-1 tracking-tight text-white flex items-center gap-2">
+                                        {selectedDriverForDetail.name || 'Driver Details'}
+                                    </h3>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={() => setSelectedDriverForDetail(null)} 
+                                className="p-1.5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                            >
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+                            {/* Phone & Status banner */}
+                            <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4 flex items-center justify-between">
+                                <div>
+                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Phone Number</p>
+                                    <p className="text-base font-extrabold text-slate-800 tracking-wide">
+                                        {selectedDriverForDetail.phone || selectedDriverForDetail.mobile || 'N/A'}
+                                    </p>
+                                </div>
+                                <span className={`px-3 py-1 rounded-full text-xs font-black border ${
+                                    selectedDriverForDetail.rideStatus === 'On Ride'
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : selectedDriverForDetail.rideStatus === 'Available'
+                                            ? 'bg-teal-50 text-teal-700 border-teal-200'
+                                            : 'bg-slate-100 text-slate-650 border-slate-200'
+                                }`}>
+                                    {selectedDriverForDetail.rideStatus || 'Offline'}
+                                </span>
+                            </div>
+
+                            {/* Details List */}
+                            <div className="space-y-3 text-sm text-slate-600 font-medium">
+                                <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
+                                    <span className="text-slate-400 font-semibold">Assigned Vehicle</span>
+                                    <span className="font-extrabold text-slate-900">
+                                        {selectedDriverForDetail.vehicleName ? `${selectedDriverForDetail.vehicleName} (${selectedDriverForDetail.vehicleNumber || ''})` : 'Unassigned'}
+                                    </span>
+                                </div>
+
+                                <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
+                                    <span className="text-slate-400 font-semibold">Driver Rating</span>
+                                    <span className="font-bold text-amber-500">⭐ {selectedDriverForDetail.driverRating ?? '5.0'} / 5.0</span>
+                                </div>
+
+                                <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
+                                    <span className="text-slate-400 font-semibold">License Number</span>
+                                    <span className="font-mono font-bold text-slate-800 uppercase">{selectedDriverForDetail.licenseNumber || 'N/A'}</span>
+                                </div>
+
+                                {/* Active Route Details */}
+                                {selectedDriverForDetail.rideStatus === 'On Ride' && (selectedDriverForDetail.pickupAddress || selectedDriverForDetail.dropAddress) ? (
+                                    <div className="p-3.5 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-1.5">
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-[11px] font-black text-indigo-900 uppercase tracking-wider flex items-center gap-1">
+                                                <Route className="h-3.5 w-3.5 text-indigo-600" /> Active Route & Fare
+                                            </span>
+                                            {selectedDriverForDetail.estimatedFare || selectedDriverForDetail.finalFare ? (
+                                                <span className="text-xs font-extrabold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
+                                                    ₹ {selectedDriverForDetail.finalFare || selectedDriverForDetail.estimatedFare}
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <div className="text-xs space-y-1">
+                                            <p className="truncate"><strong className="text-emerald-700">From:</strong> {selectedDriverForDetail.pickupAddress || 'N/A'}</p>
+                                            <p className="truncate"><strong className="text-rose-700">To:</strong> {selectedDriverForDetail.dropAddress || 'N/A'}</p>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between text-xs text-slate-500">
+                                        <span className="font-semibold">Current Ride:</span>
+                                        <span className="italic">No active ride in progress</span>
+                                    </div>
+                                )}
+
+                                {/* Today & Total Earnings */}
+                                <div className="grid grid-cols-2 gap-2.5 pt-1">
+                                    <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 text-center">
+                                        <p className="text-[10px] font-bold text-emerald-700 uppercase">Today's Earnings</p>
+                                        <p className="text-base font-black text-emerald-900">₹ {selectedDriverForDetail.todaysEarnings ?? 0}</p>
+                                    </div>
+                                    <div className="p-3 bg-blue-50 rounded-xl border border-blue-100 text-center">
+                                        <p className="text-[10px] font-bold text-blue-700 uppercase">Total Earnings</p>
+                                        <p className="text-base font-black text-blue-900">₹ {selectedDriverForDetail.totalEarnings ?? 0}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Quick Action Footer */}
+                            <div className="pt-2 flex gap-2">
+                                {selectedDriverForDetail.phone && (
+                                    <a
+                                        href={`tel:${selectedDriverForDetail.phone}`}
+                                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition-all text-center text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                                    >
+                                        <Phone className="h-3.5 w-3.5" /> Call
+                                    </a>
+                                )}
+                                <button
+                                    onClick={() => {
+                                        const transporterUserId = currentUser?.userId || currentUser?.UserId || '';
+                                        const driverUserId = selectedDriverForDetail.userId || selectedDriverForDetail.UserId || selectedDriverForDetail.id || '';
+                                        setSelectedDriverForDetail(null);
+                                        setDirectChatRoomName(`TransporterDriver_${transporterUserId}_${driverUserId}`);
+                                    }}
+                                    className="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-xl transition-all text-center text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                                >
+                                    💬 Chat
+                                </button>
+                                <button
+                                    onClick={() => setSelectedDriverForDetail(null)}
+                                    className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-xl shadow-lg transition-all active:scale-[0.98] cursor-pointer text-center text-xs"
+                                >
+                                    Close Details
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Vehicle Details Modal Card */}
             {selectedVehicleForDetail && (
-                <div className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200">
-                        
+                <div 
+                    onClick={() => setSelectedVehicleForDetail(null)}
+                    className="fixed inset-0 z-[1500] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200 cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 flex flex-col animate-in zoom-in-95 duration-200 cursor-default"
+                    >
                         {/* Header Banner */}
                         <div className="bg-slate-900 text-white px-6 py-5 flex items-center justify-between relative">
                             <div>
@@ -1318,9 +1774,31 @@ const TransporterDashboard = () => {
                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-0.5">License Plate Number</p>
                                     <p className="text-base font-extrabold text-slate-800 tracking-wide uppercase">{selectedVehicleForDetail.vehicleNumber}</p>
                                 </div>
-                                <span className={`px-3 py-1 rounded-full text-xs font-black border ${selectedVehicleForDetail.isAvailable ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-650 border-slate-200'}`}>
-                                    {selectedVehicleForDetail.isAvailable ? 'Available' : 'Busy'}
-                                </span>
+                                {(() => {
+                                    const fleetItem = fleetRows.find(f => String(f.vehicleId) === String(selectedVehicleForDetail.id));
+                                    const hasDriver = fleetItem && fleetItem.driverName && fleetItem.driverName !== 'Unassigned';
+                                    const isOnRide = fleetItem && fleetItem.rideStatus === 'On Ride';
+
+                                    if (isOnRide) {
+                                        return (
+                                            <span className="px-3 py-1 rounded-full text-xs font-black border bg-amber-50 text-amber-700 border-amber-200">
+                                                On Ride
+                                            </span>
+                                        );
+                                    }
+                                    if (hasDriver) {
+                                        return (
+                                            <span className="px-3 py-1 rounded-full text-xs font-black border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                                Assigned
+                                            </span>
+                                        );
+                                    }
+                                    return (
+                                        <span className="px-3 py-1 rounded-full text-xs font-black border bg-slate-100 text-slate-650 border-slate-200">
+                                            Unassigned
+                                        </span>
+                                    );
+                                })()}
                             </div>
 
                             {/* Details List */}
@@ -1334,6 +1812,31 @@ const TransporterDashboard = () => {
                                         })()}
                                     </span>
                                 </div>
+
+                                <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
+                                    <span className="text-slate-400 font-semibold">Vehicle Type</span>
+                                    <span className="font-extrabold text-slate-800">
+                                        {selectedVehicleForDetail.vehicleTypeName || selectedVehicleForDetail.VehicleTypeName || 'Standard Truck'}
+                                    </span>
+                                </div>
+
+                                {(selectedVehicleForDetail.bodyTypeName || selectedVehicleForDetail.BodyTypeName) ? (
+                                    <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
+                                        <span className="text-slate-400 font-semibold">Body Type</span>
+                                        <span className="font-extrabold text-slate-800">
+                                            {selectedVehicleForDetail.bodyTypeName || selectedVehicleForDetail.BodyTypeName}
+                                        </span>
+                                    </div>
+                                ) : null}
+
+                                {(selectedVehicleForDetail.tyreTypeName || selectedVehicleForDetail.TyreTypeName) ? (
+                                    <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
+                                        <span className="text-slate-400 font-semibold">Tyre Configuration</span>
+                                        <span className="font-extrabold text-slate-800">
+                                            {selectedVehicleForDetail.tyreTypeName || selectedVehicleForDetail.TyreTypeName}
+                                        </span>
+                                    </div>
+                                ) : null}
 
                                 <div className="flex justify-between items-center pb-2.5 border-b border-slate-100">
                                     <span className="text-slate-400 font-semibold">RC Number</span>
@@ -1367,11 +1870,21 @@ const TransporterDashboard = () => {
                                 </div>
                             </div>
 
-                            {/* Done Button */}
-                            <div className="pt-2">
+                            {/* Action Buttons */}
+                            <div className="pt-2 flex gap-3">
+                                <button
+                                    onClick={() => {
+                                        setVehicleToEdit(selectedVehicleForDetail);
+                                        setSelectedVehicleForDetail(null);
+                                        setIsVehicleModalOpen(true);
+                                    }}
+                                    className="flex-1 bg-primary-600 hover:bg-primary-500 text-white font-extrabold py-3.5 rounded-xl shadow-lg shadow-primary-600/20 transition-all active:scale-[0.98] cursor-pointer text-center text-sm flex items-center justify-center gap-1.5"
+                                >
+                                    ✏️ Edit & Upload Documents
+                                </button>
                                 <button
                                     onClick={() => setSelectedVehicleForDetail(null)}
-                                    className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3.5 rounded-xl shadow-lg transition-all active:scale-[0.98] cursor-pointer text-center text-sm"
+                                    className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-3.5 rounded-xl shadow-lg transition-all active:scale-[0.98] cursor-pointer text-center text-sm"
                                 >
                                     Close Details
                                 </button>
@@ -1383,14 +1896,20 @@ const TransporterDashboard = () => {
 
             {/* Vehicle Actions Modal */}
             {isActionsModalOpen && selectedVehicleForActions && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div 
+                    onClick={() => { setIsActionsModalOpen(false); setSelectedVehicleForActions(null); }}
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200 cursor-default"
+                    >
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
                                 <h3 className="font-extrabold text-slate-900 text-lg">Vehicle Actions</h3>
                                 <p className="text-xs text-slate-500">Vehicle: <span className="font-bold text-primary-600">{selectedVehicleForActions.vehicleNumber}</span></p>
                             </div>
-                            <button onClick={() => { setIsActionsModalOpen(false); setSelectedVehicleForActions(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors">
+                            <button onClick={() => { setIsActionsModalOpen(false); setSelectedVehicleForActions(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors cursor-pointer">
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
@@ -1468,14 +1987,20 @@ const TransporterDashboard = () => {
 
             {/* Assign Route / Customer Request Modal */}
             {isRouteModalOpen && selectedVehicleForActions && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div 
+                    onClick={() => { setIsRouteModalOpen(false); setSelectedVehicleForActions(null); }}
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200 cursor-default"
+                    >
                         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <div>
                                 <h3 className="font-extrabold text-slate-900 text-lg">Assign Route Request</h3>
                                 <p className="text-xs text-slate-500">Vehicle: <span className="font-bold text-primary-600">{selectedVehicleForActions.vehicleNumber}</span></p>
                             </div>
-                            <button onClick={() => { setIsRouteModalOpen(false); setSelectedVehicleForActions(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors">
+                            <button onClick={() => { setIsRouteModalOpen(false); setSelectedVehicleForActions(null); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors cursor-pointer">
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
@@ -1560,14 +2085,41 @@ const TransporterDashboard = () => {
                         
                         {/* Header Banner */}
                         <div className="bg-slate-900 text-white px-6 py-5 flex items-center justify-between border-b border-white/10 relative">
-                            <div>
-                                <span className="text-[10px] uppercase font-black tracking-widest text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-full border border-indigo-500/20">
-                                    New Booking Request
-                                </span>
-                                <h3 className="text-lg font-black mt-1.5 tracking-tight flex items-center gap-1.5">
-                                    <span>Shipment #{activeRequestModal.id}</span>
-                                    <span className="text-xs text-slate-400 font-normal">({activeRequestModal.goodsType || 'Goods'})</span>
-                                </h3>
+                            <div className="flex items-center gap-3">
+                                <div className="w-11 h-11 rounded-full overflow-hidden bg-white/10 border border-white/20 flex items-center justify-center font-black text-white text-sm uppercase shrink-0 shadow-sm">
+                                    {activeRequestModal.customerProfilePic ? (
+                                        <img 
+                                            src={
+                                                activeRequestModal.customerProfilePic.startsWith('http') || activeRequestModal.customerProfilePic.startsWith('data:')
+                                                    ? activeRequestModal.customerProfilePic
+                                                    : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${activeRequestModal.customerProfilePic.startsWith('/') ? '' : '/'}${activeRequestModal.customerProfilePic}`
+                                            }
+                                            alt={activeRequestModal.customerName || 'Customer'}
+                                            className="w-full h-full object-cover"
+                                            onError={(e) => {
+                                                (e.target as HTMLElement).style.display = 'none';
+                                            }}
+                                        />
+                                    ) : (
+                                        <span>{activeRequestModal.customerName?.substring(0, 2) || 'CU'}</span>
+                                    )}
+                                </div>
+                                <div>
+                                    <span className="text-[10px] uppercase font-black tracking-widest text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded-full border border-indigo-500/20">
+                                        New Booking Request
+                                    </span>
+                                    {(() => {
+                                        const rawGoods = activeRequestModal.goodsType || 'Goods';
+                                        const isTons = rawGoods.includes('[Unit: Tons]');
+                                        const cleanGoods = rawGoods.replace(/\s*\[Unit:\s*Tons\]/gi, '').trim() || 'Goods';
+                                        return (
+                                            <h3 className="text-base font-black mt-1 tracking-tight flex items-center gap-1.5">
+                                                <span>{activeRequestModal.customerName ? `${activeRequestModal.customerName} (#${activeRequestModal.id})` : `Shipment #${activeRequestModal.id}`}</span>
+                                                <span className="text-xs text-slate-400 font-normal">({cleanGoods})</span>
+                                            </h3>
+                                        );
+                                    })()}
+                                </div>
                             </div>
                             {modalStage === 'idle' && (
                                 <button 
@@ -1575,7 +2127,7 @@ const TransporterDashboard = () => {
                                         setDismissedBookingIds(prev => ({ ...prev, [activeRequestModal.id]: true }));
                                         setActiveRequestModal(null);
                                     }} 
-                                    className="p-1.5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                                    className="p-1.5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer self-start"
                                 >
                                     <X className="h-5 w-5" />
                                 </button>
@@ -1607,20 +2159,60 @@ const TransporterDashboard = () => {
                                     </div>
 
                                     {/* Fare, Weight, Customer Information Cards */}
-                                    <div className="grid grid-cols-3 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 text-center">
-                                        <div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Fare (Price)</p>
-                                            <p className="text-lg font-black text-emerald-600">₹{activeRequestModal.estimatedFare}</p>
+                                    {(() => {
+                                        const rawGoods = activeRequestModal.goodsType || '';
+                                        const isTons = rawGoods.includes('[Unit: Tons]');
+                                        const unit = isTons ? 'Tons' : 'kg';
+                                        return (
+                                            <div className="grid grid-cols-3 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 text-center">
+                                                <div>
+                                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Fare (Price)</p>
+                                                    <p className="text-lg font-black text-emerald-600">₹{activeRequestModal.estimatedFare}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Weight</p>
+                                                    <p className="text-base font-extrabold text-slate-800">{activeRequestModal.goodsWeight || '0'} {unit}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Distance/Est</p>
+                                                    <p className="text-base font-extrabold text-indigo-600">{activeRequestModal.scheduledTime ? 'Scheduled' : 'Live'}</p>
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
+
+                                    {/* Customer Required Vehicle Specifications */}
+                                    {(activeRequestModal.ctVehicleType || activeRequestModal.ct_VehicleType || activeRequestModal.CT_VehicleType || activeRequestModal.ctBodyType || activeRequestModal.CTBodyType || activeRequestModal.ctTyreType || activeRequestModal.CTTyreType) ? (
+                                        <div className="bg-indigo-50/50 border border-indigo-100 p-3.5 rounded-2xl text-xs space-y-2">
+                                            <p className="text-[10px] uppercase font-black text-indigo-700 tracking-wider">Required Vehicle Specifications</p>
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                                {(activeRequestModal.ctVehicleType || activeRequestModal.ct_VehicleType || activeRequestModal.CT_VehicleType) ? (
+                                                    <div className="bg-white p-2 rounded-xl border border-indigo-100 shadow-2xs">
+                                                        <p className="text-[9px] font-bold text-slate-400 uppercase">Vehicle Type</p>
+                                                        <p className="text-xs font-black text-indigo-700 truncate mt-0.5">
+                                                            {commonTypesMap[Number(activeRequestModal.ctVehicleType || activeRequestModal.ct_VehicleType || activeRequestModal.CT_VehicleType)] || `Type #${activeRequestModal.ctVehicleType || activeRequestModal.ct_VehicleType || activeRequestModal.CT_VehicleType}`}
+                                                        </p>
+                                                    </div>
+                                                ) : null}
+                                                {(activeRequestModal.ctBodyType || activeRequestModal.CTBodyType) ? (
+                                                    <div className="bg-white p-2 rounded-xl border border-blue-100 shadow-2xs">
+                                                        <p className="text-[9px] font-bold text-slate-400 uppercase">Body Type</p>
+                                                        <p className="text-xs font-black text-blue-700 truncate mt-0.5">
+                                                            {commonTypesMap[Number(activeRequestModal.ctBodyType || activeRequestModal.CTBodyType)] || `Body #${activeRequestModal.ctBodyType || activeRequestModal.CTBodyType}`}
+                                                        </p>
+                                                    </div>
+                                                ) : null}
+                                                {(activeRequestModal.ctTyreType || activeRequestModal.CTTyreType) ? (
+                                                    <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-2xs">
+                                                        <p className="text-[9px] font-bold text-slate-400 uppercase">Tyre Type</p>
+                                                        <p className="text-xs font-black text-slate-800 truncate mt-0.5">
+                                                            {commonTypesMap[Number(activeRequestModal.ctTyreType || activeRequestModal.CTTyreType)] || `Tyre #${activeRequestModal.ctTyreType || activeRequestModal.CTTyreType}`}
+                                                        </p>
+                                                    </div>
+                                                ) : null}
+                                            </div>
                                         </div>
-                                        <div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Weight</p>
-                                            <p className="text-base font-extrabold text-slate-800">{activeRequestModal.goodsWeight || '0'} Tons</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Distance/Est</p>
-                                            <p className="text-base font-extrabold text-indigo-600">{activeRequestModal.scheduledTime ? 'Scheduled' : 'Live'}</p>
-                                        </div>
-                                    </div>
+                                    ) : null}
 
                                     {/* Action buttons */}
                                     <div className="flex gap-3 pt-2">
@@ -1669,7 +2261,7 @@ const TransporterDashboard = () => {
                                         <p className="text-xs text-slate-400 mt-1">Select one of your online drivers to complete this shipment.</p>
                                     </div>
 
-                                    <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                                    <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
                                         {drivers.filter(d => d.rideStatus === 'Available').length === 0 ? (
                                             <p className="text-center text-xs text-amber-600 font-medium py-6 bg-amber-50 rounded-xl border border-amber-100">
                                                 ⚠️ No available drivers online right now. All drivers are offline or on ride.
@@ -1677,6 +2269,10 @@ const TransporterDashboard = () => {
                                         ) : (
                                             drivers.filter(d => d.rideStatus === 'Available').map(d => {
                                                 const isSelected = selectedDriverForAssign === String(d.id || d.Id || d.userId || d.UserId);
+                                                const reqBodyType = Number(activeRequestModal.ctBodyType || activeRequestModal.CTBodyType || 0);
+                                                const reqTyreType = Number(activeRequestModal.ctTyreType || activeRequestModal.CTTyreType || 0);
+                                                const isMatch = (reqBodyType === 0 || d.ctBodyType === reqBodyType) && (reqTyreType === 0 || d.ctTyreType === reqTyreType);
+
                                                 return (
                                                     <button
                                                         key={d.id}
@@ -1688,12 +2284,24 @@ const TransporterDashboard = () => {
                                                         }`}
                                                     >
                                                         <div className="flex items-center gap-3">
-                                                            <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden">
+                                                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden shrink-0">
                                                                 {d.profilePic ? <img src={d.profilePic} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
                                                             </div>
                                                             <div>
-                                                                <p className="font-bold text-slate-900 text-xs">{d.name}</p>
+                                                                <div className="flex items-center gap-2">
+                                                                    <p className="font-bold text-slate-900 text-xs">{d.name}</p>
+                                                                    {isMatch && (reqBodyType > 0 || reqTyreType > 0) && (
+                                                                        <span className="text-[9px] font-extrabold bg-emerald-100 text-emerald-700 px-1.5 py-0.2 rounded-full">
+                                                                            ✓ Spec Match
+                                                                        </span>
+                                                                    )}
+                                                                </div>
                                                                 <p className="text-[10px] text-slate-400">{d.vehicleName ? `${d.vehicleName} • ${d.vehicleNumber}` : 'Unassigned vehicle'}</p>
+                                                                {(d.ctBodyType || d.ctTyreType) ? (
+                                                                    <p className="text-[10px] text-indigo-600 font-semibold mt-0.5">
+                                                                        {d.ctBodyType ? commonTypesMap[d.ctBodyType] : ''} {d.ctTyreType ? `• ${commonTypesMap[d.ctTyreType]}` : ''}
+                                                                    </p>
+                                                                ) : null}
                                                             </div>
                                                         </div>
                                                         <div className="flex items-center gap-1.5">
@@ -1910,6 +2518,89 @@ const TransporterDashboard = () => {
                     </div>
                 </div>
             )}
+            {/* Customer Complaint / Dispute Modal Popup */}
+            {disputeAlert && (
+                <div 
+                    onClick={() => setDisputeAlert(null)}
+                    className="fixed inset-0 z-[2500] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200 cursor-pointer"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden border border-rose-150 animate-in zoom-in-95 duration-200 cursor-default"
+                    >
+                        {/* Header Banner */}
+                        <div className="bg-gradient-to-r from-rose-600 to-red-700 text-white px-6 py-5 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center text-xl shadow-inner">
+                                    ⚠️
+                                </div>
+                                <div>
+                                    <span className="text-[10px] uppercase font-black tracking-widest text-rose-200 bg-rose-900/40 px-2.5 py-0.5 rounded-full">
+                                        Customer Dispute Alert
+                                    </span>
+                                    <h3 className="text-lg font-black mt-0.5 tracking-tight">
+                                        {disputeAlert.title || 'New Complaint Reported'}
+                                    </h3>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={() => setDisputeAlert(null)}
+                                className="p-2 hover:bg-white/20 rounded-xl text-white/80 hover:text-white transition-colors cursor-pointer"
+                            >
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="p-6 space-y-4">
+                            <div className="bg-rose-50/70 border border-rose-200/80 rounded-2xl p-4 space-y-2">
+                                <div className="flex items-center justify-between text-xs font-bold text-slate-700 border-b border-rose-100 pb-2">
+                                    <span>{disputeAlert.rideId}</span>
+                                    <span className="bg-rose-100 text-rose-800 px-2.5 py-0.5 rounded-full uppercase text-[10px] font-black">
+                                        {disputeAlert.issueType}
+                                    </span>
+                                </div>
+                                {disputeAlert.driverInfo && (
+                                    <p className="text-xs font-extrabold text-slate-900">
+                                        {disputeAlert.driverInfo}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-black uppercase tracking-wider text-slate-400 block mb-1.5">
+                                    Customer Description / Complaint:
+                                </label>
+                                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-slate-800 text-sm font-semibold whitespace-pre-wrap leading-relaxed shadow-inner">
+                                    "{disputeAlert.details.replace(/^Details:\s*/i, '')}"
+                                </div>
+                            </div>
+
+                            <p className="text-[11px] text-slate-400 text-center font-medium">
+                                * This complaint has also been logged with Navgatix Admin for review and dispute mediation.
+                            </p>
+
+                            <div className="pt-2 flex gap-3">
+                                <button
+                                    type="button"
+                                    onClick={async () => {
+                                        if (disputeAlert.id) {
+                                            try {
+                                                await apiClient.post(`/Transport/markNotificationRead?notificationId=${disputeAlert.id}`);
+                                            } catch (e) {}
+                                        }
+                                        setDisputeAlert(null);
+                                    }}
+                                    className="flex-1 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer"
+                                >
+                                    Acknowledge & Dismiss
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {chatToast && (
                 <div 
                     onClick={() => {
@@ -1946,6 +2637,37 @@ const TransporterDashboard = () => {
                     </div>
                 </div>
             )}
+
+            {/* Mobile Bottom Navigation Bar */}
+            <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200/80 py-2 px-2 flex items-center justify-around shadow-2xl safe-area-bottom">
+                {[
+                    { id: 'overview', label: 'Home', icon: LayoutDashboard },
+                    { id: 'drivers', label: 'Manage Driver', icon: Users },
+                    { id: 'vehicles', label: 'Fleet', icon: Truck },
+                    { id: 'finance', label: 'Wallet', icon: DollarSign },
+                    { id: 'reports', label: 'Report', icon: FileText },
+                ].map((item) => {
+                    const Icon = item.icon;
+                    const isActive = activeTab === item.id;
+                    return (
+                        <button
+                            key={item.id}
+                            onClick={() => {
+                                setActiveTab(item.id as any);
+                                setSidebarOpen(false);
+                            }}
+                            className={`flex flex-col items-center justify-center py-1.5 px-2.5 rounded-2xl transition-all duration-200 active:scale-90 cursor-pointer ${
+                                isActive
+                                    ? 'text-emerald-600 font-extrabold bg-emerald-50/80 shadow-sm'
+                                    : 'text-slate-500 hover:text-slate-800 font-medium'
+                            }`}
+                        >
+                            <Icon className={`h-5 w-5 ${isActive ? 'text-emerald-600 stroke-[2.5]' : 'text-slate-500'}`} />
+                            <span className="text-[10px] mt-0.5 tracking-tight font-bold">{item.label}</span>
+                        </button>
+                    );
+                })}
+            </nav>
         </div>
     );
 };

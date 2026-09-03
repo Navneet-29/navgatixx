@@ -20,7 +20,7 @@ namespace navgatix
                 try
                 {
                     var context = services.GetRequiredService<SatguruDBContext>();
-                }
+                }   
                 catch (Exception ex)
                 {
 

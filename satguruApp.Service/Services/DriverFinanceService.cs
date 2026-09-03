@@ -11,6 +11,7 @@ namespace satguruApp.Service.Services
     public class DriverFinanceService : IDriverFinanceService
     {
         private const string RidePaymentMode = "ride_payment";
+        private const string CashCommissionMode = "cash_commission";
         private const string WithdrawalMode = "withdrawal";
 
         private readonly SatguruDBContext _db;
@@ -29,21 +30,81 @@ namespace satguruApp.Service.Services
             }
 
             var driver = await _db.Drivers.FirstOrDefaultAsync(x => x.UserId == driverUserId && x.IsDeleted != true);
-            if (driver != null)
+            var marker = DriverMarker(driverUserId);
+            var todayUtc = DateTime.UtcNow.Date;
+
+            // 1. Calculate net earnings from recorded paid transactions today (both Cash net and Online net)
+            var todaysPayments = await _db.Payments
+                .Where(x => x.IsDeleted != true
+                            && x.PaymentStatus == "paid"
+                            && x.PaidAt >= todayUtc
+                            && x.TransactionReference != null
+                            && x.TransactionReference.Contains(marker))
+                .ToListAsync();
+
+            decimal todaysEarningsFromPayments = 0;
+            var paidRideIdsToday = new HashSet<long>();
+
+            foreach (var p in todaysPayments)
             {
-                // Configurable commission rate (can be changed later)
-                const decimal CommissionRate = 0.10m;
-                var todayUtc = DateTime.UtcNow.Date;
-                summary.TotalEarnings = await _db.Bookings
-                    .Where(x => x.DriverId == driver.Id && x.CT_BookingStatus == RideStatus.RideCompleted && x.IsDeleted != true && x.CreatedAt >= todayUtc)
-                    .Select(x => (x.FinalFare ?? x.EstimatedFare ?? 0) * (1.0m - CommissionRate))
-                    .SumAsync();
+                if (p.PaymentMode == CashCommissionMode)
+                {
+                    // For cash payment, payment record stores commission (10%).
+                    // Net driver earning = Gross fare (Amount / 0.10) * 0.90 = Amount * 9.
+                    var netCashEarning = (p.Amount ?? 0) * 9m;
+                    todaysEarningsFromPayments += netCashEarning;
+
+                    // Track rideId if present
+                    if (p.TransactionReference != null)
+                    {
+                        var match = System.Text.RegularExpressions.Regex.Match(p.TransactionReference, @"RIDE:(\d+)");
+                        if (match.Success && long.TryParse(match.Groups[1].Value, out var rId))
+                        {
+                            paidRideIdsToday.Add(rId);
+                        }
+                    }
+                }
+                else if (p.PaymentMode == RidePaymentMode)
+                {
+                    // Online UPI payment record stores net credited amount (90%) directly
+                    todaysEarningsFromPayments += (p.Amount ?? 0);
+
+                    if (p.TransactionReference != null)
+                    {
+                        var match = System.Text.RegularExpressions.Regex.Match(p.TransactionReference, @"RIDE:(\d+)");
+                        if (match.Success && long.TryParse(match.Groups[1].Value, out var rId))
+                        {
+                            paidRideIdsToday.Add(rId);
+                        }
+                    }
+                }
             }
 
-            var marker = DriverMarker(driverUserId);
+            // 2. Also include any completed rides today that might not have a separate payment record yet
+            if (driver != null)
+            {
+                const decimal CommissionRate = 0.10m;
+                var completedRides = await _db.Bookings
+                    .Where(x => x.DriverId == driver.Id 
+                                && x.CT_BookingStatus == RideStatus.RideCompleted 
+                                && x.IsDeleted != true 
+                                && x.CreatedAt >= todayUtc)
+                    .ToListAsync();
+
+                foreach (var r in completedRides)
+                {
+                    if (!paidRideIdsToday.Contains(r.Id))
+                    {
+                        var net = (r.FinalFare ?? r.EstimatedFare ?? 0) * (1.0m - CommissionRate);
+                        todaysEarningsFromPayments += net;
+                    }
+                }
+            }
+
+            summary.TotalEarnings = todaysEarningsFromPayments;
             summary.TotalRidePayments = await _db.Payments
                 .Where(x => x.IsDeleted != true
-                            && x.PaymentMode == RidePaymentMode
+                            && (x.PaymentMode == RidePaymentMode || x.PaymentMode == CashCommissionMode)
                             && x.PaymentStatus == "paid"
                             && x.TransactionReference != null
                             && x.TransactionReference.Contains(marker))
@@ -94,31 +155,76 @@ namespace satguruApp.Service.Services
                 return Fail("Driver not found for this ride.");
             }
 
-            var payment = new Payment
+            var marker = DriverMarker(driver.UserId);
+            var alreadyPaid = await _db.Payments.AnyAsync(p => p.IsDeleted != true 
+                && p.PaymentStatus == "paid" 
+                && p.TransactionReference != null 
+                && (p.TransactionReference.Contains($"RIDE:{model.RideId}") || p.TransactionReference.Contains($"Ride_{model.RideId}")));
+
+            if (alreadyPaid)
             {
-                Id = Guid.NewGuid(),
-                BookingId = null,
-                Amount = model.Amount,
-                PaymentMode = string.IsNullOrWhiteSpace(model.PaymentMode) ? RidePaymentMode : model.PaymentMode,
-                PaymentStatus = "paid",
-                TransactionReference = $"{(string.IsNullOrWhiteSpace(model.TransactionReference) ? $"RIDE:{model.RideId}" : model.TransactionReference)}|{DriverMarker(driver.UserId)}",
-                PaidAt = DateTime.UtcNow,
-                IsDeleted = false,
-            };
-            _db.Payments.Add(payment);
+                var currentWallet = await EnsureWalletAsync(driver.UserId);
+                return Success("Payment for this ride was already recorded earlier.", Guid.Empty, currentWallet.Balance ?? 0);
+            }
 
             var wallet = await EnsureWalletAsync(driver.UserId);
-            var netCredited = model.Amount * 0.9m;
-            wallet.Balance = (wallet.Balance ?? 0) + netCredited;
-            wallet.UpdatedAt = DateTime.UtcNow;
+            var isCash = string.Equals(model.PaymentMode, "Cash", StringComparison.OrdinalIgnoreCase);
 
             if (!ride.FinalFare.HasValue || ride.FinalFare.Value <= 0)
             {
                 ride.FinalFare = model.Amount;
             }
 
-            await _db.SaveChangesAsync();
-            return Success("Ride payment recorded and wallet credited.", payment.Id, wallet.Balance ?? 0);
+            if (isCash)
+            {
+                // CASH FLOW:
+                // Driver takes full physical cash in hand.
+                // App Commission (10%) is deducted from the driver's in-app wallet balance.
+                var commission = model.Amount * 0.10m;
+                wallet.Balance = (wallet.Balance ?? 0) - commission;
+                wallet.UpdatedAt = DateTime.UtcNow;
+
+                var payment = new Payment
+                {
+                    Id = Guid.NewGuid(),
+                    BookingId = null,
+                    Amount = commission,
+                    PaymentMode = CashCommissionMode,
+                    PaymentStatus = "paid",
+                    TransactionReference = $"CASH_COMMISSION|RIDE:{model.RideId}|{DriverMarker(driver.UserId)}",
+                    PaidAt = DateTime.UtcNow,
+                    IsDeleted = false,
+                };
+                _db.Payments.Add(payment);
+
+                await _db.SaveChangesAsync();
+                return Success($"Cash payment of ₹{model.Amount} confirmed. Commission of ₹{commission:F2} deducted from wallet.", payment.Id, wallet.Balance ?? 0);
+            }
+            else
+            {
+                // ONLINE (UPI/QR) FLOW:
+                // Customer pays digitally to platform.
+                // Net Driver Earnings (90%) are credited to the driver's in-app wallet balance.
+                var netCredited = model.Amount * 0.90m;
+                wallet.Balance = (wallet.Balance ?? 0) + netCredited;
+                wallet.UpdatedAt = DateTime.UtcNow;
+
+                var payment = new Payment
+                {
+                    Id = Guid.NewGuid(),
+                    BookingId = null,
+                    Amount = netCredited,
+                    PaymentMode = RidePaymentMode,
+                    PaymentStatus = "paid",
+                    TransactionReference = $"{(string.IsNullOrWhiteSpace(model.TransactionReference) ? $"RIDE:{model.RideId}" : model.TransactionReference)}|{DriverMarker(driver.UserId)}",
+                    PaidAt = DateTime.UtcNow,
+                    IsDeleted = false,
+                };
+                _db.Payments.Add(payment);
+
+                await _db.SaveChangesAsync();
+                return Success($"Online payment recorded. Net ₹{netCredited:F2} credited to wallet.", payment.Id, wallet.Balance ?? 0);
+            }
         }
 
         public async Task<DriverFinanceResultViewModel> RequestWithdrawalAsync(WithdrawalRequestViewModel model)
@@ -221,17 +327,42 @@ namespace satguruApp.Service.Services
 
             foreach (var p in payments)
             {
-                var type = p.PaymentMode == WithdrawalMode ? "Debit" : "Credit";
-                var description = p.PaymentMode == RidePaymentMode ? "Ride Payment" : 
-                                 p.PaymentMode == WithdrawalMode ? "Withdrawal" : "Payment";
-                
+                var isCashCommission = p.PaymentMode == CashCommissionMode;
+                var isWithdrawal = p.PaymentMode == WithdrawalMode;
+                var type = (isWithdrawal || isCashCommission) ? "Debit" : "Credit";
+
+                string description;
+                if (isCashCommission)
+                {
+                    description = "Commission deduction for previous ride (Cash Payment)";
+                }
+                else if (isWithdrawal)
+                {
+                    description = "Withdrawal";
+                }
+                else
+                {
+                    description = "Ride Payment (UPI/QR)";
+                }
+
                 // Extract ride info or notes if possible
                 if (p.TransactionReference != null)
                 {
                     var parts = p.TransactionReference.Split('|');
                     var ridePart = parts.FirstOrDefault(x => x.StartsWith("RIDE:"));
-                    if (ridePart != null) description += $" (#{ridePart.Substring(5)})";
-                    
+                    if (ridePart != null)
+                    {
+                        var rideIdStr = ridePart.Substring(5);
+                        if (isCashCommission)
+                        {
+                            description = $"Commission deduction for Ride #{rideIdStr} (Cash Payment)";
+                        }
+                        else if (!isWithdrawal)
+                        {
+                            description = $"Ride Payment - Ride #{rideIdStr} (UPI/QR)";
+                        }
+                    }
+
                     var notePart = parts.FirstOrDefault(x => x.StartsWith("NOTE:"));
                     if (notePart != null) description += $" - {notePart.Substring(5)}";
                 }

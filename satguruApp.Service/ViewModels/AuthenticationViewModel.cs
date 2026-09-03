@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -29,5 +29,8 @@ namespace satguruApp.Service.ViewModels
         public bool EmailVerified { get; set; }
         public bool IsNewUser { get; set; }
         public string? RoleName { get; set; }
+        public string? ProfilePic { get; set; }
+        public string? Address { get; set; }
+        public string? PhoneNumber { get; set; }
     }
 }
