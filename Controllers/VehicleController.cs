@@ -70,9 +70,9 @@ namespace navgatix.Controllers
         }
         [HttpPatch("{bookingId}/rideStatus")]
         [AllowAnonymous]
-        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null, [FromQuery] string? cancelledBy = null)
+        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null)
         {
-            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId, cancelledBy));
+            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId));
         }
 
         [HttpPost("{bookingId}/processPayment")]

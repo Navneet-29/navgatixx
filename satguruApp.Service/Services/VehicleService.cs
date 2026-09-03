@@ -1218,10 +1218,10 @@ namespace satguruApp.Service.Services
             if (!string.IsNullOrWhiteSpace(booking.CustomerId))
             {
                 var customerMessage = GetCustomerStatusMessage(nextStatus, booking.Id);
-                var notifBody = nextStatus == RideStatus.Cancelled 
-                    ? $"RIDE_CANCELLED|{booking.Id}|{customerMessage.body}" 
-                    : (nextStatus == RideStatus.DriverAssigned 
-                        ? $"RIDE_ASSIGNED|{booking.Id}|{customerMessage.body}" 
+                var notifBody = nextStatus == RideStatus.Cancelled
+                    ? $"RIDE_CANCELLED|{booking.Id}|{customerMessage.body}"
+                    : (nextStatus == RideStatus.DriverAssigned
+                        ? $"RIDE_ASSIGNED|{booking.Id}|{customerMessage.body}"
                         : customerMessage.body);
 
                 await CreateNotificationAsync(booking.CustomerId, customerMessage.title, notifBody);
