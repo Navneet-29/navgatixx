@@ -70,9 +70,9 @@ namespace navgatix.Controllers
         }
         [HttpPatch("{bookingId}/rideStatus")]
         [AllowAnonymous]
-        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null)
+        public async Task<IActionResult> UpdateRideStatus(long bookingId, [FromQuery] string status, [FromQuery] Guid? driverId = null, [FromQuery] string cancelledByUserId = null)
         {
-            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId));
+            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, status, driverId, cancelledByUserId));
         }
 
         [HttpPost("{bookingId}/processPayment")]
@@ -148,7 +148,7 @@ namespace navgatix.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> CancelRide(long bookingId, [FromQuery] string userId = "")
         {
-            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, "cancelled", null));
+            return Ok(await _vehicleService.UpdateRideStatusAsync(bookingId, "cancelled", null, userId));
         }
         [HttpGet("ride/{bookingId}")]
         [AllowAnonymous]
@@ -267,11 +267,11 @@ namespace navgatix.Controllers
             return Ok(new { averageRating = Math.Round(avg, 1), totalRatings = ratings.Count });
         }
 
-        [HttpGet("driverSummaryCard/{driverUserId}")]
-        [AllowAnonymous]
-        public async Task<IActionResult> GetDriverSummaryCard(string driverUserId)
-        {
-            return Ok(await _vehicleService.GetDriverSummaryCardAsync(driverUserId));
-        }
+        //[HttpGet("driverSummaryCard/{driverUserId}")]
+        //[AllowAnonymous]
+        //public async Task<IActionResult> GetDriverSummaryCard(string driverUserId)
+        //{
+        //    return Ok(await _vehicleService.GetDriverSummaryCardAsync(driverUserId));
+        //}
     }
 }

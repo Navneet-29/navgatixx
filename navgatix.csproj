@@ -6,8 +6,8 @@
     <AspNetCoreHostingModel>InProcess</AspNetCoreHostingModel>
     <RootNamespace>YourProjectName</RootNamespace>
 
-    <!-- Folder where Angular build files go -->
-    <SpaRoot>ClientApp\</SpaRoot>
+    <!-- Folder where frontend build files go -->
+    <SpaRoot>..\..\navgatix-driver-app\</SpaRoot>
     <DefaultItemExcludes>$(DefaultItemExcludes);$(SpaRoot)node_modules\**</DefaultItemExcludes>
   </PropertyGroup>
 
@@ -51,7 +51,6 @@
 
 <Target Name="PublishRunWebpack" AfterTargets="ComputeFilesToPublish">
   <!-- As part of publishing, ensure the JS resources are freshly built in production mode -->
-  <Exec WorkingDirectory="$(SpaRoot)" Command="npm install" />
   <Exec WorkingDirectory="$(SpaRoot)" Command="npm run build" />
 
   <!-- Include the newly-built files in the publish output -->
