@@ -119,23 +119,56 @@ namespace navgatix.Controllers
         [HttpPost("sendInvitation")]
         public async Task<IActionResult> SendInvitation([FromQuery] string transporterUserId, [FromQuery] string driverEmail)
         {
-            if (string.IsNullOrEmpty(transporterUserId) || string.IsNullOrEmpty(driverEmail))
+            if (string.IsNullOrWhiteSpace(transporterUserId) || string.IsNullOrWhiteSpace(driverEmail))
                 return BadRequest("transporterUserId and driverEmail are required.");
 
-            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
+            long? parsedTransporterId = long.TryParse(transporterUserId, out var tid) ? tid : (long?)null;
+            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId || (parsedTransporterId.HasValue && t.Id == parsedTransporterId.Value));
             if (transporter == null) return NotFound("Transporter profile not found.");
 
-            var driverUser = await _db.Users.FirstOrDefaultAsync(u => u.Email == driverEmail);
-            if (driverUser == null) return NotFound("Driver not found with this email.");
+            var cleanInput = driverEmail.Trim();
+            var cleanEmail = cleanInput;
+            var driverUser = await _db.Users.FirstOrDefaultAsync(u => u.Email == cleanInput || u.UserName == cleanInput || u.PhoneNumber == cleanInput);
+            if (driverUser == null)
+            {
+                var digits = new string(cleanInput.Where(char.IsDigit).ToArray());
+                if (!string.IsNullOrEmpty(digits) && long.TryParse(digits, out var phoneNum))
+                {
+                    var userInfoMatch = await _db.UserInformations.FirstOrDefaultAsync(u => u.Mobile == phoneNum);
+                    if (userInfoMatch != null)
+                    {
+                        driverUser = await _db.Users.FirstOrDefaultAsync(u => u.Id == userInfoMatch.UserId);
+                    }
+                }
+            }
+            if (driverUser == null) return NotFound($"Driver not found with '{cleanInput}'. Please make sure the driver has registered an account first.");
 
             var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUser.Id && d.IsDeleted != true);
-            if (driver == null) return NotFound("Driver details not found.");
+            if (driver == null)
+            {
+                var userInfo = await _db.UserInformations.FirstOrDefaultAsync(u => u.UserId == driverUser.Id);
+                driver = new Driver
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = driverUser.Id,
+                    Name = userInfo != null ? $"{userInfo.FirstName} {userInfo.LastName}".Trim() : (driverUser.UserName ?? cleanEmail),
+                    Phone = userInfo != null ? Convert.ToString(userInfo.Mobile) : driverUser.PhoneNumber,
+                    IsDeleted = false
+                };
+                _db.Drivers.Add(driver);
+                await _db.SaveChangesAsync();
+            }
 
             if (driver.TransporterId.HasValue)
-                return BadRequest("Driver is already linked to a transporter.");
+            {
+                if (driver.TransporterId == transporter.Id)
+                    return BadRequest("This driver is already part of your fleet.");
+                else
+                    return BadRequest("Driver is currently linked to another transporter.");
+            }
 
             var transporterName = transporter.CompanyName ?? "Transporter";
-            var payload = $"INVITE|{transporter.Id}|{driverUser.Email}|{transporterName}";
+            var payload = $"INVITE|{transporter.Id}|{driverUser.Email ?? cleanEmail}|{transporterName}";
 
             var exists = await _db.Notifications.AnyAsync(n => n.UserId == driverUser.Id && n.Message == payload && n.IsRead != true);
             if (exists) return BadRequest("An invitation has already been sent to this driver.");
@@ -662,6 +695,16 @@ namespace navgatix.Controllers
             };
 
             _db.Notifications.Add(notification);
+
+            // Mark any unread new ride request notifications for this booking as read so it stops appearing as an unhandled incoming request
+            var pendingNotifs = await _db.Notifications
+                .Where(n => n.UserId == transporterUserId && n.Message.Contains(bookingId.ToString()) && n.IsRead != true)
+                .ToListAsync();
+            foreach (var notif in pendingNotifs)
+            {
+                notif.IsRead = true;
+            }
+
             await _db.SaveChangesAsync();
 
             return Ok(new { message = "Shipment successfully claimed by you. Now assign a driver to complete." });

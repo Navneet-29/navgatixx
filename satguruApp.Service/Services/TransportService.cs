@@ -202,9 +202,16 @@ namespace satguruApp.Service.Services
             return 0;
         }
 
+        private async Task<TransporterDetail?> FindTransporterAsync(string userId)
+        {
+            if (string.IsNullOrWhiteSpace(userId)) return null;
+            long? parsedTransporterId = long.TryParse(userId, out var tid) ? tid : (long?)null;
+            return await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId || (parsedTransporterId.HasValue && t.Id == parsedTransporterId.Value));
+        }
+
         public async Task<TransporterDashboardSummaryViewModel> GetDashboardSummary(string userId)
         {
-            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId);
+            var transporter = await FindTransporterAsync(userId);
             if (transporter == null) return new TransporterDashboardSummaryViewModel();
 
             var fleetCount = await _db.Vehicles.CountAsync(v => v.TransporterId == transporter.Id && v.IsDeleted != true);
@@ -319,7 +326,7 @@ namespace satguruApp.Service.Services
 
         public async Task<TransporterAnalyticsViewModel> GetTransporterAnalytics(string userId)
         {
-            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId);
+            var transporter = await FindTransporterAsync(userId);
             if (transporter == null) return new TransporterAnalyticsViewModel();
 
             var vehicles = await _db.Vehicles.Where(v => v.TransporterId == transporter.Id && v.IsDeleted != true).Select(v => v.Id).ToListAsync();
@@ -416,7 +423,7 @@ namespace satguruApp.Service.Services
 
         public async Task<List<TransporterFleetItemViewModel>> GetFleetOverview(string userId)
         {
-            var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == userId);
+            var transporter = await FindTransporterAsync(userId);
             if (transporter == null) return new List<TransporterFleetItemViewModel>();
 
             var vehicles = await _db.Vehicles

@@ -68,7 +68,7 @@ project.fragment.lock.json
 artifacts/
 appsettings.Development.json
 appsettings.Production.json
-web.config
+
 
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
@@ -376,4 +376,9 @@ FodyWeavers.xsd
 /wwwroot/index.html
 /wwwroot/assets/index-0VjoISfy.css
 /wwwroot/assets/index-C8Z_Pse8.js
-Firebase/navgatix-service-account.json 
+/ClientApp/.env
+/wwwroot/uploads/profiles/profile_267c3c8c-899f-4b4c-b83a-1b79449ab945_639237623904783715.png
+*.png
+/wwwroot/uploads/profiles/profile_d202b4b3-5bb9-4ad7-8b6e-9aa09e41b8cc_639237623590027337.png
+/wwwroot/uploads/profiles/profile_d202b4b3-5bb9-4ad7-8b6e-9aa09e41b8cc_639238600864843572.png
+/wwwroot/uploads/profiles/profile_test-user-id_639237621002782225.png
