@@ -102,6 +102,35 @@ const DriverDashboard = () => {
 
     const prevRideRequestIdsRef = useRef<Set<number>>(new Set());
 
+    const toCurrency = (value: any) => `Rs ${Number(value || 0).toLocaleString()}`;
+
+    const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+        if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+        const R = 6371; // Radius of the earth in km
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = 
+            Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        const d = R * c; // Distance in km
+        return Math.round(d * 10) / 10;
+    };
+
+    const getEstimatedTime = (distanceKm: number) => {
+        if (distanceKm <= 0) return 'N/A';
+        const averageSpeedKmh = 40; // average 40 km/h
+        const timeHours = distanceKm / averageSpeedKmh;
+        const timeMinutes = Math.ceil(timeHours * 60);
+        if (timeMinutes < 60) {
+            return `${timeMinutes} mins`;
+        }
+        const hours = Math.floor(timeMinutes / 60);
+        const mins = timeMinutes % 60;
+        return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+    };
+
     const playNotificationAlertSound = () => {
         try {
             const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
@@ -110,10 +139,9 @@ const DriverDashboard = () => {
         } catch (e) {}
     };
 
-
-    const driverUserId = user?.userId || user?.UserId || user?.id || '';
-    const driverId = user?.driverId || user?.DriverId || '';
-    const appUserId = Number(user?.appUserId || user?.AppUserId || 0);
+    const driverUserId = user?.userId || user?.UserId || user?.id || user?.Id || localStorage.getItem('userId') || '';
+    const driverId = user?.driverId || user?.DriverId || localStorage.getItem('driverId') || '';
+    const appUserId = Number(user?.appUserId || user?.AppUserId || localStorage.getItem('appUserId') || 0);
 
     useEffect(() => {
         const userStr = localStorage.getItem('user');
@@ -143,6 +171,22 @@ const DriverDashboard = () => {
             navigate('/profile', { state: { from: 'dashboard', reason: 'incomplete_profile' } });
         }
     }, [navigate]);
+
+    // Live update when driver profile changes
+    useEffect(() => {
+        const handleUserUpdated = (e: any) => {
+            if (e.detail) {
+                setUser((prev: any) => ({
+                    ...prev,
+                    ...e.detail,
+                    profilePic: e.detail.profilePic || e.detail.ProfilePic || prev?.profilePic || prev?.ProfilePic,
+                    firstName: e.detail.firstName || e.detail.FirstName || prev?.firstName
+                }));
+            }
+        };
+        window.addEventListener('navgatix:user_updated', handleUserUpdated);
+        return () => window.removeEventListener('navgatix:user_updated', handleUserUpdated);
+    }, []);
 
     useEffect(() => {
         if (!driverUserId) return;
@@ -337,6 +381,35 @@ const DriverDashboard = () => {
         }
     }, [rideRequests, dismissedRequestIds, isTracking]);
 
+    // Hardware back button support: close modals or return to 'overview' tab
+    useEffect(() => {
+        const handleHardwareBack = (e: Event) => {
+            if (chatBookingId !== null) {
+                setChatBookingId(null);
+                e.preventDefault();
+                return;
+            }
+            if (activeRequestPopup) {
+                setActiveRequestPopup(null);
+                e.preventDefault();
+                return;
+            }
+            if (sidebarOpen) {
+                setSidebarOpen(false);
+                e.preventDefault();
+                return;
+            }
+            if (activeTab !== 'overview') {
+                setActiveTab('overview');
+                e.preventDefault();
+                return;
+            }
+        };
+
+        window.addEventListener('navgatix:backbutton', handleHardwareBack);
+        return () => window.removeEventListener('navgatix:backbutton', handleHardwareBack);
+    }, [chatBookingId, activeRequestPopup, sidebarOpen, activeTab]);
+
     // Background Geolocation Tracking (Always acquires high accuracy GPS when toggle is ON)
     useEffect(() => {
         if (!isTracking) return;
@@ -485,35 +558,6 @@ const DriverDashboard = () => {
         () => rides.filter((ride) => !currentRide || ride.id !== currentRide.id),
         [rides, currentRide]
     );
-
-    const toCurrency = (value: any) => `Rs ${Number(value || 0).toLocaleString()}`;
-
-    const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-        if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
-        const R = 6371; // Radius of the earth in km
-        const dLat = (lat2 - lat1) * Math.PI / 180;
-        const dLon = (lon2 - lon1) * Math.PI / 180;
-        const a = 
-            Math.sin(dLat/2) * Math.sin(dLat/2) +
-            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-            Math.sin(dLon/2) * Math.sin(dLon/2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        const d = R * c; // Distance in km
-        return Math.round(d * 10) / 10;
-    };
-
-    const getEstimatedTime = (distanceKm: number) => {
-        if (distanceKm <= 0) return 'N/A';
-        const averageSpeedKmh = 40; // average 40 km/h
-        const timeHours = distanceKm / averageSpeedKmh;
-        const timeMinutes = Math.ceil(timeHours * 60);
-        if (timeMinutes < 60) {
-            return `${timeMinutes} mins`;
-        }
-        const hours = Math.floor(timeMinutes / 60);
-        const mins = timeMinutes % 60;
-        return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
-    };
 
     const refreshRides = async () => {
         if (!driverUserId) return;
@@ -773,14 +817,10 @@ const DriverDashboard = () => {
             return;
         }
 
-        setAcceptState('loading_route');
-
-        // Simulate 1.5s route loading animation
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        setAcceptState('ready');
-
-        // Simulate 1.5s navigation ready animation
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        // Optimistically dismiss popup and remove from list for immediate responsiveness
+        setDismissedRequestIds(prev => ({ ...prev, [ride.id]: true }));
+        setActiveRequestPopup(null);
+        setRideRequests(prev => prev.filter(r => r.id !== ride.id));
 
         try {
             const res = await apiClient.post(`/Transport/acceptShipmentAsDriver?driverUserId=${driverUserId}&bookingId=${ride.id}`);
@@ -788,6 +828,7 @@ const DriverDashboard = () => {
             await refreshRides();
         } catch (err: any) {
             alert(err?.response?.data?.message || err?.response?.data || 'Unable to accept shipment.');
+            await refreshRides();
         } finally {
             setAcceptState('idle');
         }
@@ -799,6 +840,11 @@ const DriverDashboard = () => {
             return;
         }
 
+        // Optimistically dismiss popup and remove from list
+        setDismissedRequestIds(prev => ({ ...prev, [ride.id]: true }));
+        setActiveRequestPopup(null);
+        setRideRequests(prev => prev.filter(r => r.id !== ride.id));
+
         try {
             const res = await apiClient.patch(`/Vehicle/${ride.id}/rideRequest/reject`, null, {
                 params: { driverUserId },
@@ -807,6 +853,7 @@ const DriverDashboard = () => {
             await refreshRides();
         } catch (err: any) {
             alert(err?.response?.data?.message || err?.response?.data?.Message || 'Unable to reject ride.');
+            await refreshRides();
         }
     };
 
@@ -815,6 +862,9 @@ const DriverDashboard = () => {
             const params: any = { status: nextStatus };
             if (nextStatus === 'driver_assigned' && driverId) {
                 params.driverId = driverId;
+            }
+            if (nextStatus === 'cancelled') {
+                params.cancelledByUserId = driverUserId;
             }
 
             const res = await apiClient.patch(`/Vehicle/${ride.id}/rideStatus`, null, { params });
@@ -959,7 +1009,7 @@ const DriverDashboard = () => {
                     </nav>
 
                     <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shrink-0">
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shrink-0 relative">
                             {user?.profilePic || user?.ProfilePic ? (
                                 <img 
                                     src={
@@ -971,11 +1021,17 @@ const DriverDashboard = () => {
                                     className="w-full h-full object-cover"
                                     onError={(e) => {
                                         (e.target as HTMLElement).style.display = 'none';
+                                        const sibling = (e.target as HTMLElement).nextElementSibling as HTMLElement;
+                                        if (sibling) sibling.style.display = 'flex';
                                     }}
                                 />
-                            ) : (
-                                <span>{user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}</span>
-                            )}
+                            ) : null}
+                            <span 
+                                className="w-full h-full items-center justify-center" 
+                                style={{ display: (user?.profilePic || user?.ProfilePic) ? 'none' : 'flex' }}
+                            >
+                                {user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}
+                            </span>
                         </div>
                         <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold text-slate-900 truncate">{user?.firstName || user?.name || 'Driver'}</p>
@@ -1017,11 +1073,17 @@ const DriverDashboard = () => {
                                     className="w-full h-full object-cover"
                                     onError={(e) => {
                                         (e.target as HTMLElement).style.display = 'none';
+                                        const sibling = (e.target as HTMLElement).nextElementSibling as HTMLElement;
+                                        if (sibling) sibling.style.display = 'flex';
                                     }}
                                 />
-                            ) : (
-                                <span>{user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}</span>
-                            )}
+                            ) : null}
+                            <span 
+                                className="w-full h-full items-center justify-center" 
+                                style={{ display: (user?.profilePic || user?.ProfilePic) ? 'none' : 'flex' }}
+                            >
+                                {user?.firstName?.charAt(0) || user?.name?.charAt(0) || 'D'}
+                            </span>
                         </button>
 
                         {/* Top-Right Profile Dropdown Menu */}

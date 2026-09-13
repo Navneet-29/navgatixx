@@ -95,6 +95,15 @@ type FleetRow = {
     dailyEarnings?: number;
 };
 
+const resolveProfilePicUrl = (pic?: string | null) => {
+    if (!pic) return '';
+    if (pic.startsWith('http://') || pic.startsWith('https://') || pic.startsWith('data:') || pic.startsWith('blob:')) {
+        return pic;
+    }
+    const base = (apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '');
+    return `${base}${pic.startsWith('/') ? '' : '/'}${pic}`;
+};
+
 const TransporterDashboard = () => {
     const [activeTab, setActiveTab] = useState<'overview' | 'drivers' | 'vehicles' | 'requests' | 'reports' | 'finance' | 'settings'>('overview');
     const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -121,6 +130,12 @@ const TransporterDashboard = () => {
     const [modalStage, setModalStage] = useState<'idle' | 'select_driver' | 'sending' | 'waiting' | 'accepted'>('idle');
     const [selectedDriverForAssign, setSelectedDriverForAssign] = useState<string>('');
     const [dismissedBookingIds, setDismissedBookingIds] = useState<Record<number, boolean>>({});
+    const activeRequestModalRef = useRef<any>(null);
+    activeRequestModalRef.current = activeRequestModal;
+    const modalStageRef = useRef<string>(modalStage);
+    modalStageRef.current = modalStage;
+    const dismissedBookingIdsRef = useRef<Record<number, boolean>>({});
+    dismissedBookingIdsRef.current = dismissedBookingIds;
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
     const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
@@ -199,23 +214,41 @@ const TransporterDashboard = () => {
 
     // Fetch latest user details including profile pic
     useEffect(() => {
-        const uid = currentUser?.userId || currentUser?.UserId || currentUser?.id;
+        const uid = currentUser?.userId || currentUser?.UserId || currentUser?.id || currentUser?.Id || localStorage.getItem('userId');
         if (!uid) return;
         apiClient.get(`/User/getUserDetail/${uid}`).then((res) => {
             if (res.data) {
                 setCurrentUser((prev: any) => ({
                     ...prev,
                     ...res.data,
+                    userId: prev?.userId || prev?.UserId || prev?.id || prev?.Id || res.data.userId || res.data.UserId || res.data.id || res.data.Id || uid,
                     profilePic: res.data.profilePic || res.data.ProfilePic || prev?.profilePic || prev?.ProfilePic,
                     company: res.data.company || res.data.Company || prev?.company,
                     firstName: res.data.firstName || res.data.FirstName || prev?.firstName
                 }));
             }
         }).catch(() => {});
-    }, [currentUser?.userId, currentUser?.UserId]);
+    }, [currentUser?.userId, currentUser?.UserId, currentUser?.id, currentUser?.Id]);
+
+    // Live update when profile is modified without requiring re-login
+    useEffect(() => {
+        const handleUserUpdated = (e: any) => {
+            if (e.detail) {
+                setCurrentUser((prev: any) => ({
+                    ...prev,
+                    ...e.detail,
+                    profilePic: e.detail.profilePic || e.detail.ProfilePic || prev?.profilePic || prev?.ProfilePic,
+                    company: e.detail.company || e.detail.Company || prev?.company,
+                    firstName: e.detail.firstName || e.detail.FirstName || prev?.firstName
+                }));
+            }
+        };
+        window.addEventListener('navgatix:user_updated', handleUserUpdated);
+        return () => window.removeEventListener('navgatix:user_updated', handleUserUpdated);
+    }, []);
 
     const fetchDashboardData = useCallback(async () => {
-        const userId = currentUser?.userId || currentUser?.UserId;
+        const userId = currentUser?.userId || currentUser?.UserId || currentUser?.id || currentUser?.Id || localStorage.getItem('userId') || localStorage.getItem('appUserId');
         if (!userId) return;
 
         try {
@@ -233,17 +266,21 @@ const TransporterDashboard = () => {
             const incoming = Array.isArray(requestsRes.data) ? requestsRes.data : [];
             setRideRequests(incoming);
             
-            // If currently open activeRequestModal is no longer in incoming (e.g. cancelled by customer/driver in real-time), dismiss it
-            if (activeRequestModal) {
-                const stillActive = incoming.some((r: any) => r.id === activeRequestModal.id);
-                if (!stillActive && modalStage === 'idle') {
-                    setActiveRequestModal(null);
-                }
-            } else if (incoming.length > 0) {
-                const unclaimed = incoming.find((r: any) => !dismissedBookingIds[r.id]);
+            // Only auto-open if no modal is currently active on screen
+            if (!activeRequestModalRef.current && incoming.length > 0) {
+                const unclaimed = incoming.find((r: any) => !dismissedBookingIdsRef.current[r.id]);
                 if (unclaimed) {
                     setActiveRequestModal(unclaimed);
                     setModalStage('idle');
+                }
+            } else if (activeRequestModalRef.current && modalStageRef.current === 'waiting') {
+                const isStillPending = incoming.some((r: any) => Number(r.id) === Number(activeRequestModalRef.current.id));
+                if (!isStillPending) {
+                    setModalStage('accepted');
+                    setTimeout(() => {
+                        setActiveRequestModal(null);
+                        setModalStage('idle');
+                    }, 2000);
                 }
             }
             const summaryPayload = summaryRes.data ?? {};
@@ -293,11 +330,13 @@ const TransporterDashboard = () => {
         }
     }, [currentUser, activeRequestModal, dismissedBookingIds]);
 
-    const fetchFleetLists = useCallback(async () => {
-        const userId = currentUser?.userId || currentUser?.UserId;
+    const fetchFleetLists = useCallback(async (isInitial = false) => {
+        const userId = currentUser?.userId || currentUser?.UserId || currentUser?.id || currentUser?.Id || localStorage.getItem('userId') || localStorage.getItem('appUserId');
         if (!userId) return;
 
-        setIsLoadingFleet(true);
+        if (isInitial) {
+            setIsLoadingFleet(true);
+        }
         try {
             const [driversRes, vehiclesRes] = await Promise.all([
                 apiClient.get('/Transport/getDriversList', { params: { userId } }),
@@ -308,7 +347,9 @@ const TransporterDashboard = () => {
         } catch (err) {
             console.error('Error fetching fleet lists:', err);
         } finally {
-            setIsLoadingFleet(false);
+            if (isInitial) {
+                setIsLoadingFleet(false);
+            }
         }
     }, [currentUser]);
 
@@ -438,9 +479,12 @@ const TransporterDashboard = () => {
                             id: n.id
                         });
 
-                        if (activeRequestModal && activeRequestModal.id === bookingId) {
+                        if (activeRequestModalRef.current && Number(activeRequestModalRef.current.id) === bookingId) {
                             setModalStage('accepted');
-                            setActiveRequestModal(null);
+                            setTimeout(() => {
+                                setActiveRequestModal(null);
+                                setModalStage('idle');
+                            }, 2000);
                         }
                         fetchDashboardData();
                         fetchFleetLists();
@@ -496,6 +540,55 @@ const TransporterDashboard = () => {
         }
     }, [currentUser, activeRequestModal, fetchDashboardData, fetchFleetLists]);
 
+    // Hardware back button support: close modals or return to 'overview' tab
+    useEffect(() => {
+        const handleHardwareBack = (e: Event) => {
+            if (selectedDriverForDetail) {
+                setSelectedDriverForDetail(null);
+                e.preventDefault();
+                return;
+            }
+            if (isVehicleModalOpen) {
+                setIsVehicleModalOpen(false);
+                e.preventDefault();
+                return;
+            }
+            if (isDriverModalOpen) {
+                setIsDriverModalOpen(false);
+                e.preventDefault();
+                return;
+            }
+            if (isAssignModalOpen) {
+                setIsAssignModalOpen(false);
+                e.preventDefault();
+                return;
+            }
+            if (activeRequestModal) {
+                setActiveRequestModal(null);
+                e.preventDefault();
+                return;
+            }
+            if (chatBookingId !== null) {
+                setChatBookingId(null);
+                e.preventDefault();
+                return;
+            }
+            if (sidebarOpen) {
+                setSidebarOpen(false);
+                e.preventDefault();
+                return;
+            }
+            if (activeTab !== 'overview') {
+                setActiveTab('overview');
+                e.preventDefault();
+                return;
+            }
+        };
+
+        window.addEventListener('navgatix:backbutton', handleHardwareBack);
+        return () => window.removeEventListener('navgatix:backbutton', handleHardwareBack);
+    }, [selectedDriverForDetail, isVehicleModalOpen, isDriverModalOpen, isAssignModalOpen, activeRequestModal, chatBookingId, sidebarOpen, activeTab]);
+
     const handleAcceptRelationship = async (notifId: string) => {
         try {
             await apiClient.post(`/Transport/acceptRequest?notificationId=${notifId}`);
@@ -510,11 +603,13 @@ const TransporterDashboard = () => {
 
     const handleRejectRelationship = async (notifId: string) => {
         try {
+            setRelationshipRequests(prev => prev.filter((r: any) => (r.id || r.notificationId) !== notifId));
             await apiClient.post(`/Transport/rejectRequest?notificationId=${notifId}`);
             alert("Request declined.");
             fetchRelationshipNotifications();
         } catch (err: any) {
             alert(err?.response?.data || "Failed to reject request.");
+            fetchRelationshipNotifications();
         }
     };
 
@@ -523,6 +618,7 @@ const TransporterDashboard = () => {
             return;
         }
         try {
+            setRelationshipRequests(prev => prev.filter((r: any) => (r.id || r.notificationId) !== notifId));
             await apiClient.post(`/Transport/approveLeaveRequest?notificationId=${notifId}`);
             alert("Leave request approved. Driver has been released.");
             fetchRelationshipNotifications();
@@ -530,6 +626,7 @@ const TransporterDashboard = () => {
             fetchDashboardData();
         } catch (err: any) {
             alert(err?.response?.data || "Failed to approve release.");
+            fetchRelationshipNotifications();
         }
     };
 
@@ -549,13 +646,7 @@ const TransporterDashboard = () => {
         }
     };
 
-    useEffect(() => {
-        if (currentUser) {
-            fetchDashboardData();
-            fetchFleetLists();
-            fetchRelationshipNotifications();
-        }
-    }, [currentUser, fetchDashboardData, fetchFleetLists, fetchRelationshipNotifications]);
+
 
     useEffect(() => {
         const userId = currentUser?.userId || currentUser?.UserId;
@@ -590,19 +681,19 @@ const TransporterDashboard = () => {
     }, [currentUser]);
 
     useEffect(() => {
-        const userId = currentUser?.userId || currentUser?.UserId;
+        const userId = currentUser?.userId || currentUser?.UserId || currentUser?.id || currentUser?.Id || localStorage.getItem('userId') || localStorage.getItem('appUserId');
         if (!userId) return;
 
         fetchRelationshipNotifications();
-        fetchFleetLists();
+        fetchFleetLists(true);
         fetchDashboardData();
         const intervalId = setInterval(() => {
             fetchRelationshipNotifications();
-            fetchFleetLists();
+            fetchFleetLists(false);
             fetchDashboardData();
         }, 5000);
         return () => clearInterval(intervalId);
-    }, [currentUser, fetchRelationshipNotifications, fetchFleetLists, fetchDashboardData]);
+    }, [currentUser, fetchDashboardData, fetchFleetLists, fetchRelationshipNotifications]);
 
     useEffect(() => {
         const sosNotif = relationshipRequests.find(n => n.message && n.message.startsWith('SOS|'));
@@ -623,6 +714,13 @@ const TransporterDashboard = () => {
             const route = parts[3];
             const fare = Number(parts[4] || 0);
             setDriverAcceptAlert({ driverName, bookingId, route, fare, id: acceptNotif.id });
+            if (activeRequestModalRef.current && Number(activeRequestModalRef.current.id) === bookingId) {
+                setModalStage('accepted');
+                setTimeout(() => {
+                    setActiveRequestModal(null);
+                    setModalStage('idle');
+                }, 2000);
+            }
         } else {
             setDriverAcceptAlert(null);
         }
@@ -768,7 +866,7 @@ const TransporterDashboard = () => {
                     </nav>
 
                     <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shrink-0">
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shrink-0 relative">
                             {currentUser?.profilePic || currentUser?.ProfilePic ? (
                                 <img 
                                     src={
@@ -780,11 +878,17 @@ const TransporterDashboard = () => {
                                     className="w-full h-full object-cover"
                                     onError={(e) => {
                                         (e.target as HTMLElement).style.display = 'none';
+                                        const sibling = (e.target as HTMLElement).nextElementSibling as HTMLElement;
+                                        if (sibling) sibling.style.display = 'flex';
                                     }}
                                 />
-                            ) : (
-                                <span>{currentUser?.company ? currentUser.company.substring(0, 2).toUpperCase() : (currentUser?.firstName ? currentUser.firstName.substring(0, 2).toUpperCase() : 'TL')}</span>
-                            )}
+                            ) : null}
+                            <span 
+                                className="w-full h-full items-center justify-center" 
+                                style={{ display: (currentUser?.profilePic || currentUser?.ProfilePic) ? 'none' : 'flex' }}
+                            >
+                                {currentUser?.company ? currentUser.company.substring(0, 2).toUpperCase() : (currentUser?.firstName ? currentUser.firstName.substring(0, 2).toUpperCase() : 'TL')}
+                            </span>
                         </div>
                         <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold text-slate-900 truncate">{currentUser?.company || currentUser?.firstName || 'Transporter Fleet'}</p>
@@ -820,9 +924,24 @@ const TransporterDashboard = () => {
                         <button 
                             onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
                             title="Account & Settings"
-                            className="w-9 h-9 rounded-full bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white font-black border-2 border-white/40 shadow-md active:scale-90 transition-all text-xs cursor-pointer"
+                            className="w-9 h-9 rounded-full overflow-hidden bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white font-black border-2 border-white/40 shadow-md active:scale-90 transition-all text-xs cursor-pointer shrink-0"
                         >
-                            {currentUser?.firstName?.charAt(0) || currentUser?.company?.charAt(0) || 'T'}
+                            {currentUser?.profilePic || currentUser?.ProfilePic ? (
+                                <img 
+                                    src={
+                                        (currentUser.profilePic || currentUser.ProfilePic).startsWith('http') || (currentUser.profilePic || currentUser.ProfilePic).startsWith('data:')
+                                            ? (currentUser.profilePic || currentUser.ProfilePic)
+                                            : `${(apiClient.defaults.baseURL || '').replace(/\/api\/?$/, '')}${(currentUser.profilePic || currentUser.ProfilePic).startsWith('/') ? '' : '/'}${currentUser.profilePic || currentUser.ProfilePic}`
+                                    } 
+                                    alt="Transporter" 
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                        (e.target as HTMLElement).style.display = 'none';
+                                    }}
+                                />
+                            ) : (
+                                <span>{currentUser?.company ? currentUser.company.substring(0, 1).toUpperCase() : (currentUser?.firstName ? currentUser.firstName.substring(0, 1).toUpperCase() : 'T')}</span>
+                            )}
                         </button>
 
                         {/* Top-Right Profile Dropdown Menu */}
@@ -975,7 +1094,76 @@ const TransporterDashboard = () => {
                                         <input type="text" placeholder="Filter fleet..." className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-full sm:w-64" />
                                     </div>
                                 </div>
-                                <div className="overflow-x-auto">
+                                {/* Mobile Card View (Optimized for Android / Mobile Devices) */}
+                                <div className="divide-y divide-slate-100 block md:hidden">
+                                    {fleetRows.length > 0 ? fleetRows.map((row, i) => (
+                                        <div key={i} className="p-4 space-y-3 bg-white hover:bg-slate-50 transition-colors">
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex items-center gap-2.5">
+                                                    <div className="h-9 w-9 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-700 font-black text-sm shrink-0">
+                                                        🚛
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-extrabold text-slate-900 text-sm tracking-tight">{row.vehicleNumber}</p>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className="text-xs font-semibold text-slate-600">{row.driverName || 'Unassigned'}</span>
+                                                            {row.driverName !== 'Unassigned' && (
+                                                                <span className={`inline-flex items-center gap-0.5 text-[9px] font-bold ${row.liveStatus === 'Live' ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                                                    <span className={`h-1.5 w-1.5 rounded-full ${row.liveStatus === 'Live' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></span>
+                                                                    {row.liveStatus === 'Live' ? 'Online' : 'Offline'}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${getStatusStyles(row.rideStatus)}`}>
+                                                        {row.rideStatus || 'Available'}
+                                                    </span>
+                                                    <button 
+                                                        onClick={() => {
+                                                            setSelectedVehicleForActions(row);
+                                                            setIsActionsModalOpen(true);
+                                                        }}
+                                                        className="text-slate-400 hover:text-primary-600 p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+                                                        title="Vehicle actions"
+                                                    >
+                                                        <MoreVertical className="h-4 w-4" />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {row.routeSummary && row.routeSummary !== 'Idle' ? (
+                                                <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 space-y-1.5">
+                                                    <div className="flex items-start gap-2">
+                                                        <Route className="h-3.5 w-3.5 text-indigo-600 shrink-0 mt-0.5" />
+                                                        <p className="text-xs font-bold text-slate-800 line-clamp-3 leading-relaxed">{row.routeSummary}</p>
+                                                    </div>
+                                                    <div className="flex items-center justify-between text-[11px] pt-1.5 border-t border-slate-200/60 font-semibold">
+                                                        {row.goodsType ? <span className="text-slate-500">Goods: <strong className="text-slate-700">{row.goodsType}</strong></span> : <span></span>}
+                                                        <span className="text-emerald-600 font-extrabold text-xs">Fare: Rs. {row.estimatedFare || 0}</span>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="bg-slate-50/70 rounded-xl p-2.5 text-center text-xs text-slate-400 italic">
+                                                    No active shipment assigned
+                                                </div>
+                                            )}
+
+                                            {row.driverName !== 'Unassigned' && (
+                                                <div className="flex items-center justify-between text-xs font-semibold text-slate-600 px-1 pt-0.5">
+                                                    <span className="text-slate-400 text-[11px]">Today: <strong className="text-emerald-600 font-bold">Rs. {row.dailyEarnings || 0}</strong></span>
+                                                    <span className="text-slate-400 text-[11px]">Total: <strong className="text-slate-700 font-bold">Rs. {row.driverEarnings || 0}</strong></span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )) : (
+                                        <div className="p-8 text-center text-slate-400 italic text-xs">No vehicles in fleet</div>
+                                    )}
+                                </div>
+
+                                {/* Desktop Table (Hidden on Mobile) */}
+                                <div className="hidden md:block overflow-x-auto">
                                     <table className="w-full text-left">
                                         <thead className="bg-slate-50 text-slate-500 text-xs font-bold uppercase">
                                             <tr>
@@ -1161,7 +1349,7 @@ const TransporterDashboard = () => {
                                                             title="Click to view Driver Profile details"
                                                         >
                                                             <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden ring-2 ring-slate-200 group-hover:ring-indigo-500 transition-all shrink-0">
-                                                                {d.profilePic ? <img src={d.profilePic} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
+                                                                {d.profilePic ? <img src={resolveProfilePicUrl(d.profilePic)} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
                                                             </div>
                                                             <div className="flex flex-col">
                                                                 <span className="text-slate-900 font-extrabold group-hover:text-indigo-600 transition-colors flex items-center gap-1.5 text-sm">
@@ -1605,7 +1793,7 @@ const TransporterDashboard = () => {
                             <div className="flex items-center gap-3">
                                 <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center overflow-hidden border border-white/20">
                                     {selectedDriverForDetail.profilePic ? (
-                                        <img src={selectedDriverForDetail.profilePic} alt="" className="w-full h-full object-cover" />
+                                        <img src={resolveProfilePicUrl(selectedDriverForDetail.profilePic)} alt="" className="w-full h-full object-cover" />
                                     ) : (
                                         <Users className="h-5 w-5 text-indigo-300" />
                                     )}
@@ -2110,7 +2298,6 @@ const TransporterDashboard = () => {
                                     </span>
                                     {(() => {
                                         const rawGoods = activeRequestModal.goodsType || 'Goods';
-                                        const isTons = rawGoods.includes('[Unit: Tons]');
                                         const cleanGoods = rawGoods.replace(/\s*\[Unit:\s*Tons\]/gi, '').trim() || 'Goods';
                                         return (
                                             <h3 className="text-base font-black mt-1 tracking-tight flex items-center gap-1.5">
@@ -2220,6 +2407,8 @@ const TransporterDashboard = () => {
                                             onClick={async () => {
                                                 try {
                                                     const transporterUserId = currentUser?.userId || currentUser?.UserId;
+                                                    // Prevent auto-polling from treating this as an unhandled fresh popup
+                                                    setDismissedBookingIds(prev => ({ ...prev, [activeRequestModal.id]: true }));
                                                     // Accept as transporter (claims booking)
                                                     await apiClient.post(`/Transport/acceptShipmentAsTransporter?transporterUserId=${transporterUserId}&bookingId=${activeRequestModal.id}`);
                                                     // Transition to driver selection stage
@@ -2285,7 +2474,7 @@ const TransporterDashboard = () => {
                                                     >
                                                         <div className="flex items-center gap-3">
                                                             <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden shrink-0">
-                                                                {d.profilePic ? <img src={d.profilePic} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
+                                                                {d.profilePic ? <img src={resolveProfilePicUrl(d.profilePic)} alt="" className="w-full h-full object-cover" /> : <Users className="h-4 w-4 text-slate-400" />}
                                                             </div>
                                                             <div>
                                                                 <div className="flex items-center gap-2">
