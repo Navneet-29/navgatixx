@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Anchor, ArrowRightLeft, Bookmark, CheckCircle, ClipboardList, Database, History, Info, Layout, MapPin, MessageCircle, Navigation, Package, Search, Truck, User, X, LayoutDashboard, Settings, LogOut, Menu, ChevronDown, CreditCard, Bell, Key, Home, Star } from 'lucide-react';
+import { Anchor, ArrowRightLeft, Bookmark, CheckCircle, ClipboardList, Database, History, Info, Layout, MapPin, MessageCircle, Navigation, Package, Search, Truck, User, X, LayoutDashboard, Settings, LogOut, Menu, ChevronDown, CreditCard, Bell, Key, Home, Star, Phone } from 'lucide-react';
 import apiClient from '../../api/apiClient';
 import { fetchVehicleCommonTypes } from '../../services/vehicleCommonTypes';
 import { normalizeCommonTypes, type NormalizedCommonType } from '../../lib/commonTypes';
@@ -330,6 +330,19 @@ const CustomerDashboard = () => {
             console.error('Failed to cancel search', err);
             setSearchingBookingId(null);
             openShipmentList();
+        }
+    };
+
+    const handleCancelRide = async (bookingId: number) => {
+        if (!window.confirm("Are you sure you want to cancel this active delivery?")) return;
+        try {
+            const customerUserId = user?.userId || user?.UserId || user?.id || '';
+            await apiClient.patch(`/Vehicle/${bookingId}/cancelRide?userId=${customerUserId}`);
+            setShipments((prev) => prev.map((s) => s.id === bookingId ? { ...s, status: 'cancelled' } : s));
+            alert('Ride cancelled successfully.');
+        } catch (err) {
+            console.error('Failed to cancel ride', err);
+            alert('Failed to cancel ride. Please try again.');
         }
     };
 
@@ -1030,6 +1043,9 @@ const CustomerDashboard = () => {
                                                     pickupLng={activeShip.pickupLng || 77.2090}
                                                     dropLat={activeShip.dropLat || 19.0760}
                                                     dropLng={activeShip.dropLng || 72.8777}
+                                                    pickupAddress={activeShip.pickup}
+                                                    dropAddress={activeShip.destination}
+                                                    rideStatus={activeShip.status}
                                                 />
                                             </div>
 
@@ -1076,20 +1092,36 @@ const CustomerDashboard = () => {
                                                     </div>
                                                 </div>
 
-                                                <div className="flex gap-3 mt-6">
-                                                    {activeShip.driverPhone && (
-                                                        <a 
-                                                            href={`tel:${activeShip.driverPhone}`} 
-                                                            className="flex-1 text-center py-2.5 rounded-xl border border-slate-200 text-slate-700 font-bold text-sm bg-slate-50 hover:bg-slate-100 transition-all flex items-center justify-center gap-2"
+                                                <div className="mt-5 pt-3 border-t border-slate-100 space-y-2">
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        {activeShip.driverPhone ? (
+                                                            <a 
+                                                                href={`tel:${activeShip.driverPhone}`} 
+                                                                className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold text-xs shadow-xs transition-all no-underline"
+                                                            >
+                                                                <Phone className="h-3.5 w-3.5 text-emerald-600" />
+                                                                Call
+                                                            </a>
+                                                        ) : (
+                                                            <div className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl border border-slate-100 bg-slate-50 text-slate-400 font-medium text-xs">
+                                                                <Phone className="h-3.5 w-3.5" />
+                                                                No Phone
+                                                            </div>
+                                                        )}
+                                                        <button 
+                                                            onClick={() => setChatBookingId(activeShip.id)}
+                                                            className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-xs transition-all cursor-pointer"
                                                         >
-                                                            📞 Call
-                                                        </a>
-                                                    )}
+                                                            <MessageCircle className="h-3.5 w-3.5" />
+                                                            Chat
+                                                        </button>
+                                                    </div>
                                                     <button 
-                                                        onClick={() => setChatBookingId(activeShip.id)}
-                                                        className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition-all flex items-center justify-center gap-2"
+                                                        onClick={() => handleCancelRide(activeShip.id)}
+                                                        className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/80 font-bold text-xs transition-all cursor-pointer"
                                                     >
-                                                        💬 Chat
+                                                        <X className="h-3.5 w-3.5 text-rose-600" />
+                                                        Cancel Ride
                                                     </button>
                                                 </div>
                                             </div>
@@ -2116,6 +2148,9 @@ const CustomerDashboard = () => {
                                 pickupLng={trackingBooking.pickupLng || formData.pickupLng || 77.2090}
                                 dropLat={trackingBooking.dropLat || formData.dropLat || 19.0760}
                                 dropLng={trackingBooking.dropLng || formData.dropLng || 72.8777}
+                                pickupAddress={trackingBooking.pickup || formData.pickup}
+                                dropAddress={trackingBooking.destination || formData.destination}
+                                rideStatus={trackingBooking.status}
                             />
                             <div className="mt-6 flex items-center justify-between gap-4 rounded-2xl bg-slate-50 p-4">
                                 <div className="flex items-center gap-4">

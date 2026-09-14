@@ -353,37 +353,38 @@ namespace navgatix.Controllers
             return Ok(result);
         }
 
-        //[HttpPost("uploadDriverKYC")]
-        //[AllowAnonymous]
-        //public async Task<IActionResult> UploadDriverKYC([FromForm] Guid driverId, [FromForm] string documentType, [FromForm] IFormFile file)
-        //{
-        //    if (file == null || file.Length == 0) return BadRequest("File is empty");
+        [HttpPost("uploadDriverKYC")]
+        [AllowAnonymous]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> UploadDriverKYC([FromForm] DriverKYCUploadRequest request)
+        {
+            if (request.File == null || request.File.Length == 0) return BadRequest("File is empty");
 
-        //    var ext = Path.GetExtension(file.FileName).ToLower();
-        //    var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".pdf", ".doc", ".docx" };
-        //    if (!allowedExtensions.Contains(ext)) return BadRequest("Invalid file format");
+            var ext = Path.GetExtension(request.File.FileName).ToLower();
+            var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".pdf", ".doc", ".docx" };
+            if (!allowedExtensions.Contains(ext)) return BadRequest("Invalid file format");
 
-        //    var uploadFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot/uploads/kyc");
-        //    if (!Directory.Exists(uploadFolder)) Directory.CreateDirectory(uploadFolder);
+            var uploadFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot/uploads/kyc");
+            if (!Directory.Exists(uploadFolder)) Directory.CreateDirectory(uploadFolder);
 
-        //    var fileName = $"{driverId}_{documentType}_{DateTime.Now.Ticks}{ext}";
-        //    var filePath = Path.Combine(uploadFolder, fileName);
-        //    var relativePath = $"/uploads/kyc/{fileName}";
+            var fileName = $"{request.DriverId}_{request.DocumentType}_{DateTime.Now.Ticks}{ext}";
+            var filePath = Path.Combine(uploadFolder, fileName);
+            var relativePath = $"/uploads/kyc/{fileName}";
 
-        //    using (var stream = new FileStream(filePath, FileMode.Create))
-        //    {
-        //        await file.CopyToAsync(stream);
-        //    }
+            using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await request.File.CopyToAsync(stream);
+            }
 
-        //    var kycResult = await _transportService.SaveDriverKYCAsync(new DriverKYCViewModel
-        //    {
-        //        DriverId = driverId,
-        //        DocumentType = documentType,
-        //        DocumentUrl = relativePath
-        //    });
+            var kycResult = await _transportService.SaveDriverKYCAsync(new DriverKYCViewModel
+            {
+                DriverId = request.DriverId,
+                DocumentType = request.DocumentType,
+                DocumentUrl = relativePath
+            });
 
-        //    return Ok(new { DocumentUrl = relativePath });
-        //}
+            return Ok(new { DocumentUrl = relativePath });
+        }
 
         [HttpPost("createToken")]
         [AllowAnonymous]
