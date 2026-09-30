@@ -180,16 +180,6 @@ namespace navgatix.Controllers
 
             //var stream = await
 
-            //   // AppCache.GetorSetInCacheAsync<byte[]>(id.ToString() + fileName + docKey, () =>
-
-            //   // {
-
-            //         _imageRepository.DownloadFileAsync(_documentService.GetDocument(id.GetValueOrDefault(), fileName, docKey, false).DocumentPath, CDNFolder, CDNAccount, CDNKey);
-
-            //    //});
-
-            //string contentType;
-
             //if (!provider.TryGetContentType(fileName, out contentType))
 
             //{

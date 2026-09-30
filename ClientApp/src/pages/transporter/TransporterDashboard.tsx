@@ -175,23 +175,7 @@ const TransporterDashboard = () => {
 
     const formatCurrency = (value: number = 0) => `₹ ${Number(value).toLocaleString('en-IN')}`;
 
-    useEffect(() => {
-        if (!activeRequestModal || modalStage !== 'waiting') return;
 
-        const intervalId = setInterval(async () => {
-            try {
-                const res = await apiClient.get(`/Vehicle/shipmentDetail/${activeRequestModal.id}`);
-                if (res.data?.driverStatus === 'Accepted' || res.data?.rideStatus === 'driver_assigned' || res.data?.rideStatus === 'driver_arriving') {
-                    setModalStage('accepted');
-                    clearInterval(intervalId);
-                }
-            } catch (err) {
-                console.error("Error polling shipment detail:", err);
-            }
-        }, 2000);
-
-        return () => clearInterval(intervalId);
-    }, [activeRequestModal, modalStage]);
 
     const { user: authUser, logout: authContextLogout } = useAuth();
 
@@ -273,14 +257,19 @@ const TransporterDashboard = () => {
                     setActiveRequestModal(unclaimed);
                     setModalStage('idle');
                 }
-            } else if (activeRequestModalRef.current && modalStageRef.current === 'waiting') {
+            } else if (activeRequestModalRef.current) {
                 const isStillPending = incoming.some((r: any) => Number(r.id) === Number(activeRequestModalRef.current.id));
                 if (!isStillPending) {
-                    setModalStage('accepted');
-                    setTimeout(() => {
+                    if (modalStageRef.current === 'waiting') {
+                        setModalStage('accepted');
+                        setTimeout(() => {
+                            setActiveRequestModal(null);
+                            setModalStage('idle');
+                        }, 2000);
+                    } else {
                         setActiveRequestModal(null);
                         setModalStage('idle');
-                    }, 2000);
+                    }
                 }
             }
             const summaryPayload = summaryRes.data ?? {};
@@ -309,6 +298,7 @@ const TransporterDashboard = () => {
                     driverId: item.driverId ?? item.DriverId,
                     driverName: item.driverName ?? item.DriverName,
                     driverPhone: item.driverPhone ?? item.DriverPhone,
+                    driverUserId: item.driverUserId ?? item.DriverUserId,
                     rideStatus: item.rideStatus ?? item.RideStatus,
                     routeSummary: item.routeSummary ?? item.RouteSummary,
                     activeBookingId: item.activeBookingId ?? item.ActiveBookingId,
@@ -329,6 +319,44 @@ const TransporterDashboard = () => {
             console.error('Error fetching transporter dashboard data:', err);
         }
     }, [currentUser, activeRequestModal, dismissedBookingIds]);
+
+    useEffect(() => {
+        if (!activeRequestModal) return;
+
+        const intervalId = setInterval(async () => {
+            try {
+                const res = await apiClient.get(`/Vehicle/shipmentDetail/${activeRequestModal.id}`);
+                const data = res.data || {};
+                const rStatus = String(data.rideStatus ?? data.RideStatus ?? data.status ?? '').toLowerCase();
+
+                if (rStatus === 'cancelled' || data.isDeleted) {
+                    clearInterval(intervalId);
+                    setActiveRequestModal(null);
+                    setModalStage('idle');
+                    setChatToast({
+                        id: String(Date.now()),
+                        senderName: 'Ride Cancelled',
+                        messageText: `Ride #${activeRequestModal.id} was cancelled by customer.`
+                    });
+                    fetchDashboardData();
+                    return;
+                }
+
+                if (modalStage === 'waiting' && (data.driverStatus === 'Accepted' || rStatus === 'driver_assigned' || rStatus === 'driver_arriving')) {
+                    setModalStage('accepted');
+                    clearInterval(intervalId);
+                    setTimeout(() => {
+                        setActiveRequestModal(null);
+                        setModalStage('idle');
+                    }, 2000);
+                }
+            } catch (err) {
+                console.error("Error polling shipment detail:", err);
+            }
+        }, 2000);
+
+        return () => clearInterval(intervalId);
+    }, [activeRequestModal, modalStage, fetchDashboardData]);
 
     const fetchFleetLists = useCallback(async (isInitial = false) => {
         const userId = currentUser?.userId || currentUser?.UserId || currentUser?.id || currentUser?.Id || localStorage.getItem('userId') || localStorage.getItem('appUserId');
@@ -519,12 +547,18 @@ const TransporterDashboard = () => {
                         } catch (e) {}
 
                         const parts = n.message.split('|');
+                        const bookingId = Number(parts[1]);
                         const info = parts[2] || parts[1] || 'Ride cancelled';
                         setChatToast({
                             id: n.id,
                             senderName: '⚠️ Ride Cancelled',
                             messageText: info
                         });
+
+                        if (activeRequestModalRef.current && (!bookingId || Number(activeRequestModalRef.current.id) === bookingId)) {
+                            setActiveRequestModal(null);
+                            setModalStage('idle');
+                        }
 
                         fetchDashboardData();
                         fetchFleetLists();
@@ -2122,7 +2156,7 @@ const TransporterDashboard = () => {
                                     <button
                                         onClick={() => {
                                             setIsActionsModalOpen(false);
-                                            handleUnassignDriver(selectedVehicleForActions.activeBookingId);
+                                            handleUnassignDriver(selectedVehicleForActions.driverId, selectedVehicleForActions.activeBookingId, selectedVehicleForActions.driverUserId);
                                         }}
                                         className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 hover:border-red-500 hover:bg-red-50/30 text-red-600 font-bold text-sm text-left cursor-pointer"
                                     >

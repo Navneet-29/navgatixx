@@ -954,6 +954,7 @@ namespace satguruApp.Service.Services
             }
 
             var transporterIds = matched.Where(x => x.TransporterId.HasValue).Select(x => x.TransporterId!.Value).Distinct().ToList();
+            var transporterUserIds = new List<string>();
             if (transporterIds.Any())
             {
                 var transporters = await _db.TransporterDetails
@@ -962,6 +963,10 @@ namespace satguruApp.Service.Services
 
                 foreach (var transporter in transporters)
                 {
+                    if (!string.IsNullOrWhiteSpace(transporter.UserId))
+                    {
+                        transporterUserIds.Add(transporter.UserId);
+                    }
                     _db.Notifications.Add(new Notification
                     {
                         Id = Guid.NewGuid(),
@@ -976,9 +981,15 @@ namespace satguruApp.Service.Services
 
             await _db.SaveChangesAsync();
 
-            // Push notifications to matched drivers
+            // Push notifications to matched drivers AND transporters
+            var pushTargetUserIds = matched.Select(x => x.DriverUserId)
+                .Concat(transporterUserIds)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct()
+                .ToList();
+
             await SafePushToUsersAsync(
-                matched.Select(x => x.DriverUserId),
+                pushTargetUserIds,
                 new PushNotificationPayload
                 {
                     Title = "New Ride Request",
@@ -1191,10 +1202,10 @@ namespace satguruApp.Service.Services
 
             booking.CT_BookingStatus = nextStatus;
 
-            if (nextStatus == RideStatus.DriverAssigned || booking.DriverId.HasValue)
+            if (nextStatus == RideStatus.DriverAssigned || nextStatus == RideStatus.Cancelled || nextStatus == RideStatus.RideCompleted || booking.DriverId.HasValue)
             {
                 var pendingBookingNotifs = await _db.Notifications
-                    .Where(n => (n.Title == "New Ride Request" || n.Title == "New Shipment Assignment")
+                    .Where(n => (n.Title == "New Ride Request" || n.Title == "New Shipment Assignment" || n.Title == "New Order Request Received")
                                 && n.IsRead != true
                                 && n.Message != null
                                 && (n.Message.Contains($"Ride #{booking.Id}")
@@ -1237,10 +1248,11 @@ namespace satguruApp.Service.Services
                 await _trackingNotificationService.NotifyRideStatusChangedAsync(trackingSnapshot);
             }
 
+            var cancellationMessage = $"{cancellationActorRole} {cancellationActorName} cancelled ride #{booking.Id}.";
+
             if (!string.IsNullOrWhiteSpace(booking.CustomerId))
             {
                 var customerMessage = GetCustomerStatusMessage(nextStatus, booking.Id);
-                var cancellationMessage = $"{cancellationActorRole} {cancellationActorName} cancelled ride #{booking.Id}.";
                 var notifBody = nextStatus == RideStatus.Cancelled
                     ? $"RIDE_CANCELLED|{booking.Id}|{cancellationMessage}"
                     : (nextStatus == RideStatus.DriverAssigned 
@@ -1266,7 +1278,6 @@ namespace satguruApp.Service.Services
                 {
                     if (driver != null && !string.IsNullOrWhiteSpace(driver.UserId))
                     {
-                        var cancellationMessage = $"{cancellationActorRole} {cancellationActorName} cancelled ride #{booking.Id}.";
                         await CreateNotificationAsync(driver.UserId, "Ride Cancelled", $"RIDE_CANCELLED|{booking.Id}|{cancellationMessage}");
                         await SafePushToUserAsync(
                             driver.UserId,
@@ -1279,7 +1290,14 @@ namespace satguruApp.Service.Services
                     }
                 }
 
-                // 2. Identify Transporter (via driver, vehicle, or prior claim) and notify
+                // 2. Identify all candidate transporters and drivers who were sent dispatch requests for this ride
+                var notifiedUserIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                if (driver != null && !string.IsNullOrWhiteSpace(driver.UserId))
+                {
+                    notifiedUserIds.Add(driver.UserId);
+                }
+
                 TransporterDetail? transporterDetail = driver?.Transporter;
                 if (transporterDetail == null && driver?.TransporterId.HasValue == true)
                 {
@@ -1314,11 +1332,31 @@ namespace satguruApp.Service.Services
 
                 if (transporterDetail != null && !string.IsNullOrWhiteSpace(transporterDetail.UserId))
                 {
-                    var transporterUserId = transporterDetail.UserId;
-                    var cancellationMessage = $"{cancellationActorRole} {cancellationActorName} cancelled ride #{booking.Id}.";
-                    await CreateNotificationAsync(transporterUserId, "Ride Cancelled", $"RIDE_CANCELLED|{booking.Id}|{cancellationMessage}");
+                    notifiedUserIds.Add(transporterDetail.UserId);
+                }
+
+                // Also find all transporters / drivers who received initial dispatch notification for this booking
+                var dispatchedUsers = await _db.Notifications
+                    .Where(n => n.Message != null
+                                && (n.Message.Contains($"Ride #{booking.Id}")
+                                    || n.Message.StartsWith($"CLAIM|{booking.Id}|")
+                                    || n.Message.StartsWith($"ASSIGN_SHIPMENT|{booking.Id}|"))
+                                && n.UserId != null
+                                && n.UserId != booking.CustomerId)
+                    .Select(n => n.UserId!)
+                    .Distinct()
+                    .ToListAsync();
+
+                foreach (var uid in dispatchedUsers)
+                {
+                    notifiedUserIds.Add(uid);
+                }
+
+                foreach (var targetUserId in notifiedUserIds)
+                {
+                    await CreateNotificationAsync(targetUserId, "Ride Cancelled", $"RIDE_CANCELLED|{booking.Id}|{cancellationMessage}");
                     await SafePushToUserAsync(
-                        transporterUserId,
+                        targetUserId,
                         new PushNotificationPayload
                         {
                             Title = "Ride Cancelled",
