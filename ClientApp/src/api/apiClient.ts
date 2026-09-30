@@ -1,12 +1,14 @@
 import axios from 'axios';
 
 const FALLBACK_URLS = [
-    'http://192.168.1.67:5293/api',
+    'http://10.201.136.191:5293/api',
+    'http://192.168.137.1:5293/api',
+    'http://10.125.31.129:5293/api',
+    'http://100.102.86.120:5293/api',
+    'http://10.244.62.191:5293/api',
     'http://10.0.2.2:5293/api',
-    'http://localhost:5293/api',
-    'http://172.26.32.159:5293/api',
-    'http://10.87.66.191:5293/api',
-    'http://172.21.28.50:5293/api'
+    'http://192.168.1.67:5293/api',
+    'http://localhost:5293/api'
 ];
 
 let activeWorkingBaseUrl: string | null = null;

@@ -227,6 +227,18 @@ namespace satguruApp.Service.Services
                             body = payload.Body,
                         },
                         data = payload.Data,
+                        android = new
+                        {
+                            priority = "high",
+                            notification = new
+                            {
+                                channel_id = "navgatix_alerts",
+                                priority = "high",
+                                sound = "default",
+                                default_sound = true,
+                                default_vibrate_timings = true
+                            }
+                        },
                         webpush = new
                         {
                             notification = new

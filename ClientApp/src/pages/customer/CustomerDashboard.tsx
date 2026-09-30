@@ -227,6 +227,42 @@ const CustomerDashboard = () => {
                                     messageText
                                 });
                             }
+                        } else if (n.message && n.message.startsWith('RIDE_CANCELLED|')) {
+                            const parts = n.message.split('|');
+                            const info = parts[2] || parts[1] || 'Ride cancelled';
+                            setChatToast({
+                                id: n.id,
+                                senderName: 'Ride Cancelled',
+                                messageText: info
+                            });
+                            setShipments((prev) => prev.map((shipment) =>
+                                shipment.id === Number(parts[1]) ? { ...shipment, status: 'cancelled' } : shipment
+                            ));
+                        } else if (n.message && n.message.startsWith('RIDE_ASSIGNED|')) {
+                            const parts = n.message.split('|');
+                            const bookingId = Number(parts[1]);
+                            if (bookingId > 0) {
+                                apiClient.get(`/Vehicle/ride/${bookingId}`).then(res => {
+                                    const ride = res.data || {};
+                                    const rideStatus = (ride.rideStatus ?? ride.RideStatus ?? 'driver_assigned') as RideStatus;
+                                    setShipments((prev) => prev.map((s) => s.id === bookingId ? {
+                                        ...s,
+                                        status: rideStatus,
+                                        driverName: ride.driverName || ride.DriverName || s.driverName,
+                                        driverPhone: ride.driverPhone || ride.DriverPhone || s.driverPhone,
+                                        driverUserId: ride.driverUserId || ride.DriverUserId || s.driverUserId,
+                                        driverProfilePic: ride.driverProfilePic || ride.DriverProfilePic || s.driverProfilePic,
+                                        vehicleName: ride.vehicleName || ride.VehicleName || s.vehicleName,
+                                        vehicleNumber: ride.vehicleNumber || ride.VehicleNumber || s.vehicleNumber,
+                                        vehicle: ride.vehicleNumber || ride.VehicleNumber || s.vehicle,
+                                        pickupLat: Number(ride.pickupLat ?? ride.PickupLat ?? s.pickupLat ?? 0),
+                                        pickupLng: Number(ride.pickupLng ?? ride.PickupLng ?? s.pickupLng ?? 0),
+                                        dropLat: Number(ride.dropLat ?? ride.DropLat ?? s.dropLat ?? 0),
+                                        dropLng: Number(ride.dropLng ?? ride.DropLng ?? s.dropLng ?? 0),
+                                        estimatedFare: Number(ride.estimatedFare || ride.EstimatedFare || ride.finalFare || s.estimatedFare || 0)
+                                    } : s));
+                                }).catch(() => {});
+                            }
                         }
                     }
                 });
@@ -393,17 +429,29 @@ const CustomerDashboard = () => {
                 try {
                     const res = await apiClient.get(`/Vehicle/ride/${searchingBookingId}`);
                     const ride = res.data || {};
-                    const rideStatus = ride.rideStatus ?? ride.RideStatus ?? 'request_for_ride';
+                    const rawStatus = (ride.rideStatus ?? ride.RideStatus ?? ride.status ?? '').toString().toLowerCase().replace(/_/g, '');
                     
-                    if (rideStatus === 'driver_assigned' || rideStatus === 'driver_arriving' || rideStatus === 'ride_started') {
+                    if (rawStatus === 'driverassigned' || rawStatus === 'driverarriving' || rawStatus === 'ridestarted' || rawStatus === 'rideaccepted' || ride.driverId || ride.DriverId) {
                         clearInterval(timer);
                         if (poll) clearInterval(poll);
                         
+                        const normalizedStatus = (ride.rideStatus ?? ride.RideStatus ?? 'driver_assigned') as RideStatus;
                         // Match succeeded! Update local shipments list
                         setShipments((prev) => prev.map((s) => s.id === searchingBookingId ? { 
                             ...s, 
-                            status: rideStatus, 
-                            vehicle: ride.vehicleNumber || s.vehicle 
+                            status: normalizedStatus, 
+                            driverName: ride.driverName || ride.DriverName || s.driverName,
+                            driverPhone: ride.driverPhone || ride.DriverPhone || s.driverPhone,
+                            driverUserId: ride.driverUserId || ride.DriverUserId || s.driverUserId,
+                            driverProfilePic: ride.driverProfilePic || ride.DriverProfilePic || s.driverProfilePic,
+                            vehicleName: ride.vehicleName || ride.VehicleName || s.vehicleName,
+                            vehicleNumber: ride.vehicleNumber || ride.VehicleNumber || s.vehicleNumber,
+                            vehicle: ride.vehicleNumber || ride.VehicleNumber || s.vehicle,
+                            pickupLat: Number(ride.pickupLat ?? ride.PickupLat ?? s.pickupLat ?? 0),
+                            pickupLng: Number(ride.pickupLng ?? ride.PickupLng ?? s.pickupLng ?? 0),
+                            dropLat: Number(ride.dropLat ?? ride.DropLat ?? s.dropLat ?? 0),
+                            dropLng: Number(ride.dropLng ?? ride.DropLng ?? s.dropLng ?? 0),
+                            estimatedFare: Number(ride.estimatedFare || ride.EstimatedFare || ride.finalFare || s.estimatedFare || 0)
                         } : s));
                         setMatchedDriverDetails(ride);
                     }

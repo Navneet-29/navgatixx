@@ -8,32 +8,38 @@ namespace satguruApp.Service.Services
     {
         public static string? ResolveServiceAccountPath(IConfiguration configuration)
         {
-            var configuredPath = configuration["Firebase:ServiceAccountPath"];
-            var envPath = Environment.GetEnvironmentVariable("FIREBASE_SERVICE_ACCOUNT_PATH");
-            var serviceAccountPath = !string.IsNullOrWhiteSpace(configuredPath)
-                ? configuredPath
-                : envPath;
-
-            if (string.IsNullOrWhiteSpace(serviceAccountPath))
+            var candidates = new List<string?>
             {
-                return null;
-            }
+                configuration["Firebase:ServiceAccountPath"],
+                configuration["Firebase:CredentialsFilePath"],
+                Environment.GetEnvironmentVariable("FIREBASE_SERVICE_ACCOUNT_PATH"),
+                "firebase-service-account.json",
+                "firebase-service-account.json.json",
+                "Firebase/navgatix-service-account.json",
+                "Firebase\\navgatix-service-account.json",
+                "navgatix-service-account.json"
+            };
 
-            if (Path.IsPathRooted(serviceAccountPath))
+            foreach (var path in candidates)
             {
-                return File.Exists(serviceAccountPath) ? serviceAccountPath : null;
-            }
+                if (string.IsNullOrWhiteSpace(path)) continue;
 
-            var currentDirectoryPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), serviceAccountPath));
-            if (File.Exists(currentDirectoryPath))
-            {
-                return currentDirectoryPath;
-            }
+                if (Path.IsPathRooted(path) && File.Exists(path))
+                {
+                    return path;
+                }
 
-            var appBaseDirectoryPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, serviceAccountPath));
-            if (File.Exists(appBaseDirectoryPath))
-            {
-                return appBaseDirectoryPath;
+                var currentDir = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), path));
+                if (File.Exists(currentDir))
+                {
+                    return currentDir;
+                }
+
+                var appBaseDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
+                if (File.Exists(appBaseDir))
+                {
+                    return appBaseDir;
+                }
             }
 
             return null;
