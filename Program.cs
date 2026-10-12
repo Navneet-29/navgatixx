@@ -26,7 +26,7 @@ namespace navgatix
 
                 }
             }
-            builder.Run();
+                builder.Run();
             //// Add services to the container.
         }
 
