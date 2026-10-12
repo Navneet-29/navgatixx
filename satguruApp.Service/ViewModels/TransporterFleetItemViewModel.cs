@@ -8,6 +8,7 @@ namespace satguruApp.Service.ViewModels
         public string VehicleNumber { get; set; }
         public string VehicleName { get; set; }
         public string VehicleTypeName { get; set; }
+        public int? CT_VehicleType { get; set; }
 
         public Guid? DriverId { get; set; }
         public string DriverName { get; set; }

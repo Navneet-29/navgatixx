@@ -352,6 +352,38 @@ namespace satguruApp.Service.Services
                 return new List<BookingViewModel> { new BookingViewModel { Message = "Driver user id is required." } };
             }
 
+            // If driver is offline, do not return any ride requests
+            var isDriverOnline = await _db.UserInformations
+                .Where(x => x.UserId != null && x.UserId.ToLower() == driverUserId.ToLower())
+                .Select(x => x.IsOnline)
+                .FirstOrDefaultAsync();
+
+            if (isDriverOnline != true)
+            {
+                return new List<BookingViewModel>();
+            }
+
+            // If driver is already on an active ride, do not return any new ride requests
+            var driverEntityForCheck = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+            if (driverEntityForCheck != null)
+            {
+                var drvGuid = driverEntityForCheck.Id;
+                Guid.TryParse(driverEntityForCheck.UserId, out var drvUserGuid);
+
+                var isDriverOnActiveRide = await _db.Bookings.AnyAsync(b => 
+                    (b.DriverId == drvGuid || (drvUserGuid != Guid.Empty && b.DriverId == drvUserGuid))
+                    && b.CustomerId != null
+                    && b.IsDeleted != true
+                    && (b.CT_BookingStatus == RideStatus.DriverAssigned 
+                        || b.CT_BookingStatus == RideStatus.DriverArriving 
+                        || b.CT_BookingStatus == RideStatus.RideStarted));
+
+                if (isDriverOnActiveRide)
+                {
+                    return new List<BookingViewModel>();
+                }
+            }
+
             var pendingBookingNotifications = await _db.Notifications
                 .Where(x => x.UserId == driverUserId && (x.Title == "New Ride Request" || x.Title == "New Shipment Assignment" || x.Title == "New Order Request Received") && x.IsRead != true)
                 .Select(x => x.Message)
@@ -405,7 +437,10 @@ namespace satguruApp.Service.Services
                                       CTTyreType = book.CTTyreType,
                                   }).ToListAsync();
 
-            // Match notification metadata for each booking
+            var allVehicleTypes = await _db.CommonTypes.Where(c => (c.Keys == "VEHTYP" || c.Keys == "BDTYP" || c.Keys == "VEHTYR" || c.Keys == "vehicle_type" || c.Keys == "body_type" || c.Keys == "tyre_type") && c.IsDeleted != true).ToListAsync();
+            var typeLookup = allVehicleTypes.ToDictionary(c => c.Id, c => c.Name);
+
+            // Match notification metadata and specifications for each booking
             foreach (var b in bookings)
             {
                 var assignNotif = pendingBookingNotifications.FirstOrDefault(msg => msg != null && msg.StartsWith($"ASSIGN_SHIPMENT|{b.Id}|"));
@@ -416,6 +451,66 @@ namespace satguruApp.Service.Services
                     if (parts.Length > 3)
                     {
                         b.TransporterName = parts[3];
+                    }
+                }
+
+                if (b.CT_VehicleType.HasValue && typeLookup.TryGetValue(b.CT_VehicleType.Value, out var vName))
+                {
+                    b.VehicleTypeName = vName;
+                }
+                if (b.CTBodyType.HasValue && typeLookup.TryGetValue(b.CTBodyType.Value, out var bName))
+                {
+                    b.BodyTypeName = bName;
+                }
+                if (b.CTTyreType.HasValue && typeLookup.TryGetValue(b.CTTyreType.Value, out var tName))
+                {
+                    b.TyreTypeName = tName;
+                }
+            }
+
+            // If the ride is for a specific vehicle category and driver is assigned a different vehicle category,
+            // driver should NOT see that published ride.
+            var driverEntity = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+            if (driverEntity != null)
+            {
+                var driverGuidOrUserId = driverEntity.Id;
+                Guid.TryParse(driverEntity.UserId, out var parsedDrvUid);
+
+                var driverStandingBooking = await _db.Bookings
+                    .Where(b => (b.DriverId == driverGuidOrUserId || (parsedDrvUid != Guid.Empty && b.DriverId == parsedDrvUid))
+                                && b.VehicleId.HasValue 
+                                && b.CustomerId == null 
+                                && b.CT_BookingStatus != RideStatus.RideCompleted 
+                                && b.CT_BookingStatus != RideStatus.Cancelled)
+                    .OrderByDescending(b => b.CreatedAt)
+                    .FirstOrDefaultAsync();
+
+                if (driverStandingBooking == null || !driverStandingBooking.VehicleId.HasValue)
+                {
+                    // Fallback to in-progress customer trip if assigned
+                    driverStandingBooking = await _db.Bookings
+                        .Where(b => (b.DriverId == driverGuidOrUserId || (parsedDrvUid != Guid.Empty && b.DriverId == parsedDrvUid))
+                                    && b.VehicleId.HasValue 
+                                    && b.CT_BookingStatus != RideStatus.RideCompleted 
+                                    && b.CT_BookingStatus != RideStatus.Cancelled)
+                        .OrderByDescending(b => b.CreatedAt)
+                        .FirstOrDefaultAsync();
+                }
+
+                if (driverStandingBooking?.VehicleId != null)
+                {
+                    var driverVehicle = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == driverStandingBooking.VehicleId.Value && v.IsDeleted != true);
+                    if (driverVehicle?.CT_VehicleType != null)
+                    {
+                        typeLookup.TryGetValue(driverVehicle.CT_VehicleType.Value, out var driverVehName);
+                        string driverCategory = GetVehicleCategory(driverVehicle.CT_VehicleType.Value, driverVehName);
+
+                        bookings = bookings.Where(b => {
+                            if (!b.CT_VehicleType.HasValue || b.CT_VehicleType.Value == 0) return true;
+                            typeLookup.TryGetValue(b.CT_VehicleType.Value, out var reqVehName);
+                            string reqCategory = GetVehicleCategory(b.CT_VehicleType.Value, reqVehName);
+                            return reqCategory == driverCategory;
+                        }).ToList();
                     }
                 }
             }
@@ -441,28 +536,26 @@ namespace satguruApp.Service.Services
                 .Select(d => d.UserId)
                 .ToListAsync();
 
-            var pendingBookingIds = await _db.Notifications
-                .Where(x => (x.UserId == transporterUserId || driverUserIds.Contains(x.UserId)) 
-                            && (x.Title == "New Ride Request" || x.Title == "New Order Request Received" || x.Title == "New Shipment Assignment") 
-                            && x.IsRead != true)
+            var rejectedNotifications = await _db.Notifications
+                .Where(x => x.UserId == transporterUserId
+                            && (x.Title == "New Ride Request" || x.Title == "New Order Request Received" || x.Title == "New Shipment Assignment")
+                            && x.IsRead == true)
                 .Select(x => x.Message)
                 .ToListAsync();
 
-            var bookingIds = pendingBookingIds
+            var rejectedBookingIds = rejectedNotifications
                 .Select(ParseBookingIdFromNotification)
                 .Where(x => x > 0)
                 .Distinct()
-                .ToList();
+                .ToHashSet();
 
-            if (!bookingIds.Any()) return new List<BookingViewModel>();
-
-            return await (from book in _db.Bookings
+            var transporterBookings = await (from book in _db.Bookings
                           join custInfo in _db.UserInformations on book.CustomerId equals custInfo.UserId into custInfoGroup
                           from custInfo in custInfoGroup.DefaultIfEmpty()
-                          where bookingIds.Contains(book.Id)
-                              && book.IsDeleted != true
+                          where book.IsDeleted != true
                               && book.CT_BookingStatus == RideStatus.RequestForRide
                               && !book.DriverId.HasValue
+                              && !rejectedBookingIds.Contains(book.Id)
                           orderby book.CreatedAt descending
                           select new BookingViewModel
                           {
@@ -492,6 +585,27 @@ namespace satguruApp.Service.Services
                               CTBodyType = book.CTBodyType,
                               CTTyreType = book.CTTyreType,
                           }).ToListAsync();
+
+            var allVehicleTypes = await _db.CommonTypes.Where(c => (c.Keys == "VEHTYP" || c.Keys == "BDTYP" || c.Keys == "VEHTYR" || c.Keys == "vehicle_type" || c.Keys == "body_type" || c.Keys == "tyre_type") && c.IsDeleted != true).ToListAsync();
+            var typeLookup = allVehicleTypes.ToDictionary(c => c.Id, c => c.Name);
+
+            foreach (var b in transporterBookings)
+            {
+                if (b.CT_VehicleType.HasValue && typeLookup.TryGetValue(b.CT_VehicleType.Value, out var vName))
+                {
+                    b.VehicleTypeName = vName;
+                }
+                if (b.CTBodyType.HasValue && typeLookup.TryGetValue(b.CTBodyType.Value, out var bName))
+                {
+                    b.BodyTypeName = bName;
+                }
+                if (b.CTTyreType.HasValue && typeLookup.TryGetValue(b.CTTyreType.Value, out var tName))
+                {
+                    b.TyreTypeName = tName;
+                }
+            }
+
+            return transporterBookings;
         }
 
         public async Task<List<BookingViewModel>> GetDriverRidesAsync(string driverUserId)
@@ -558,6 +672,25 @@ namespace satguruApp.Service.Services
 
             if (bookings.Any())
             {
+                var allVehicleTypes = await _db.CommonTypes.Where(c => (c.Keys == "VEHTYP" || c.Keys == "BDTYP" || c.Keys == "VEHTYR" || c.Keys == "vehicle_type" || c.Keys == "body_type" || c.Keys == "tyre_type") && c.IsDeleted != true).ToListAsync();
+                var typeLookup = allVehicleTypes.ToDictionary(c => c.Id, c => c.Name);
+
+                foreach (var b in bookings)
+                {
+                    if (b.CT_VehicleType.HasValue && typeLookup.TryGetValue(b.CT_VehicleType.Value, out var vName))
+                    {
+                        b.VehicleTypeName = vName;
+                    }
+                    if (b.CTBodyType.HasValue && typeLookup.TryGetValue(b.CTBodyType.Value, out var bName))
+                    {
+                        b.BodyTypeName = bName;
+                    }
+                    if (b.CTTyreType.HasValue && typeLookup.TryGetValue(b.CTTyreType.Value, out var tName))
+                    {
+                        b.TyreTypeName = tName;
+                    }
+                }
+
                 return bookings;
             }
 
@@ -798,7 +931,7 @@ namespace satguruApp.Service.Services
             var onlineUserSet = new HashSet<string>(onlineUserInfos, StringComparer.OrdinalIgnoreCase);
 
             var vehicleCommonTypes = await _db.CommonTypes
-                .Where(c => c.Keys == "VEHTYP" && c.IsDeleted != true)
+                .Where(c => (c.Keys == "VEHTYP" || c.Keys == "vehicle_type") && c.IsDeleted != true)
                 .ToListAsync();
             var vehicleTypeLookup = vehicleCommonTypes.ToDictionary(c => c.Id, c => c.Name);
 
@@ -809,6 +942,17 @@ namespace satguruApp.Service.Services
                 requestedCategory = GetVehicleCategory(model.CT_VehicleType.Value, reqName);
             }
 
+            var activeCustomerRides = await _db.Bookings
+                .Where(b => b.DriverId.HasValue 
+                            && b.CustomerId != null 
+                            && b.IsDeleted != true 
+                            && (b.CT_BookingStatus == RideStatus.DriverAssigned 
+                                || b.CT_BookingStatus == RideStatus.DriverArriving 
+                                || b.CT_BookingStatus == RideStatus.RideStarted))
+                .Select(b => b.DriverId.Value)
+                .ToListAsync();
+            var busyDriverIds = new HashSet<Guid>(activeCustomerRides);
+
             var candidates = new List<DriverCandidate>();
             foreach (var driver in driversList)
             {
@@ -818,21 +962,33 @@ namespace satguruApp.Service.Services
                     continue;
                 }
 
-                var assignment = activeAssignments.FirstOrDefault(a => a.DriverId == driver.Id);
+                // If driver is currently on an active ride, do not send new ride request
+                Guid.TryParse(driver.UserId, out var drvUid);
+                if (busyDriverIds.Contains(driver.Id) || (drvUid != Guid.Empty && busyDriverIds.Contains(drvUid)))
+                {
+                    continue;
+                }
+
+                // Find driver's active assigned vehicle
+                var assignment = activeAssignments.FirstOrDefault(a => a.DriverId == driver.Id 
+                    || (Guid.TryParse(driver.UserId, out var pUid) && a.DriverId == pUid));
                 var vehicle = assignment != null ? vehicles.FirstOrDefault(v => v.Id == assignment.VehicleId) : null;
 
-                // Strictly match exclusively across the 3 categories: 2_wheeler, 3_wheeler, truck
+                // Strictly match exclusively across categories (2_wheeler, 3_wheeler, truck)
                 if (!string.IsNullOrEmpty(requestedCategory))
                 {
-                    if (vehicle != null && vehicle.CT_VehicleType.HasValue)
+                    if (vehicle == null || !vehicle.CT_VehicleType.HasValue)
                     {
-                        vehicleTypeLookup.TryGetValue(vehicle.CT_VehicleType.Value, out var driverVehName);
-                        var driverCategory = GetVehicleCategory(vehicle.CT_VehicleType.Value, driverVehName);
+                        // Driver has no assigned vehicle or vehicle has no type -> exclude from specific requests
+                        continue;
+                    }
 
-                        if (driverCategory != requestedCategory)
-                        {
-                            continue;
-                        }
+                    vehicleTypeLookup.TryGetValue(vehicle.CT_VehicleType.Value, out var driverVehName);
+                    var driverCategory = GetVehicleCategory(vehicle.CT_VehicleType.Value, driverVehName);
+
+                    if (driverCategory != requestedCategory)
+                    {
+                        continue;
                     }
                 }
 
@@ -906,12 +1062,6 @@ namespace satguruApp.Service.Services
                     .ToList();
             }
 
-            if (!matched.Any())
-            {
-                result.Message = "No available drivers found.";
-                return result;
-            }
-
             var customerUser = await _db.Users.FirstOrDefaultAsync(u => u.Id == model.CustomerId || u.Email == model.CustomerId || u.UserName == model.CustomerId);
             var customerDetail = await _db.CustomerDetails.FirstOrDefaultAsync(c => c.UserId == model.CustomerId || c.Id.ToString() == model.CustomerId);
             string validCustomerId = customerUser?.Id ?? customerDetail?.UserId ?? (await _db.Users.Select(u => u.Id).FirstOrDefaultAsync()) ?? model.CustomerId;
@@ -953,30 +1103,26 @@ namespace satguruApp.Service.Services
                 });
             }
 
-            var transporterIds = matched.Where(x => x.TransporterId.HasValue).Select(x => x.TransporterId!.Value).Distinct().ToList();
-            var transporterUserIds = new List<string>();
-            if (transporterIds.Any())
-            {
-                var transporters = await _db.TransporterDetails
-                    .Where(t => transporterIds.Contains(t.Id) && t.UserId != null)
-                    .ToListAsync();
+            var allTransporters = await _db.TransporterDetails
+                .Where(t => t.IsDeleted != true && !string.IsNullOrEmpty(t.UserId))
+                .ToListAsync();
 
-                foreach (var transporter in transporters)
+            var transporterUserIds = new List<string>();
+            foreach (var transporter in allTransporters)
+            {
+                if (!string.IsNullOrWhiteSpace(transporter.UserId))
                 {
-                    if (!string.IsNullOrWhiteSpace(transporter.UserId))
-                    {
-                        transporterUserIds.Add(transporter.UserId);
-                    }
-                    _db.Notifications.Add(new Notification
-                    {
-                        Id = Guid.NewGuid(),
-                        UserId = transporter.UserId,
-                        Title = "New Ride Request",
-                        Message = $"CLAIM|{booking.Id}|{transporter.Id}|New ride request nearby! Pickup: {booking.PickupAddress}",
-                        IsRead = false,
-                        CreatedAt = DateTime.UtcNow,
-                    });
+                    transporterUserIds.Add(transporter.UserId);
                 }
+                _db.Notifications.Add(new Notification
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = transporter.UserId,
+                    Title = "New Ride Request",
+                    Message = $"CLAIM|{booking.Id}|{transporter.Id}|New ride request nearby! Pickup: {booking.PickupAddress}",
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow,
+                });
             }
 
             await _db.SaveChangesAsync();
@@ -1000,7 +1146,9 @@ namespace satguruApp.Service.Services
             result.BookingId = booking.Id;
             result.MatchedDrivers = matched;
             result.MatchedCount = matched.Count;
-            result.Message = $"Ride request sent to {matched.Count} driver(s).";
+            result.Message = matched.Count > 0 
+                ? $"Ride request sent to {matched.Count} driver(s) and fleet transporters." 
+                : "Ride request published successfully to fleet transporters.";
             result.IsSuccess = true;
             return result;
         }
@@ -1070,8 +1218,24 @@ namespace satguruApp.Service.Services
                     }
                 }
 
-                var indDrivers = await _db.Drivers.Where(d => d.TransporterId == null && d.IsDeleted != true).ToListAsync();
-                foreach (var d in indDrivers)
+                var onlineDriverUserIds = new HashSet<string>(
+                    await _db.UserInformations
+                        .Where(u => u.IsOnline == true && u.UserId != null)
+                        .Select(u => u.UserId!)
+                        .ToListAsync(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+                var indDrivers = await _db.Drivers
+                    .Where(d => d.TransporterId == null && d.IsDeleted != true && d.UserId != null)
+                    .ToListAsync();
+
+                // Only include independent drivers who have their online toggle ON
+                var onlineIndDrivers = indDrivers
+                    .Where(d => !string.IsNullOrEmpty(d.UserId) && onlineDriverUserIds.Contains(d.UserId))
+                    .ToList();
+
+                foreach (var d in onlineIndDrivers)
                 {
                     if (string.IsNullOrEmpty(d.UserId)) continue;
 
@@ -1109,10 +1273,8 @@ namespace satguruApp.Service.Services
 
                         if (!isClose) continue;
                     }
-                    else
-                    {
-                        continue; // Skip drivers without known coordinates
-                    }
+                    // If coordinates are not yet available (e.g. testing device or newly registered driver),
+                    // allow notification so driver receives order request and in-app alert instead of dropping it silently.
 
                     var n = new satguruApp.DLL.Models.Notification
                     {
@@ -1125,6 +1287,18 @@ namespace satguruApp.Service.Services
                     _db.Notifications.Add(n);
                 }
                 await _db.SaveChangesAsync();
+
+                // Send push notification to target users so app rings and displays in system notification tray
+                var pushPayload = new PushNotificationPayload
+                {
+                    Title = "New Order Request Available",
+                    Body = $"{booking.PickupAddress} ➔ {booking.DropAddress} (Fare: ₹{booking.EstimatedFare})",
+                    Data = CreatePushData(booking.Id, "new_order_request", RideStatus.ToName(RideStatus.RequestForRide))
+                };
+                var targetPushUserIds = transporters.Where(t => !string.IsNullOrEmpty(t.UserId)).Select(t => t.UserId)
+                    .Concat(onlineIndDrivers.Where(d => !string.IsNullOrEmpty(d.UserId)).Select(d => d.UserId!))
+                    .Distinct(StringComparer.OrdinalIgnoreCase);
+                await SafePushToUsersAsync(targetPushUserIds, pushPayload);
             }
             catch (Exception)
             {
@@ -1424,18 +1598,15 @@ namespace satguruApp.Service.Services
                 .OrderByDescending(x => x.CreatedAt)
                 .FirstOrDefaultAsync(x =>
                     x.UserId == driverUserId &&
-                    x.Title == "New Ride Request" &&
-                    x.IsRead != true &&
+                    (x.Title == "New Ride Request" || x.Title == "New Shipment Assignment" || x.Title == "New Order Request Received") &&
                     x.Message != null &&
-                    x.Message.Contains($"Ride #{bookingId}"));
+                    (x.Message.Contains($"Ride #{bookingId}") || x.Message.Contains($"|{bookingId}|") || x.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|")));
 
-            if (driverNotification == null)
+            if (driverNotification != null && driverNotification.IsRead != true)
             {
-                return new BookingViewModel { Id = bookingId, Message = "Pending ride request not found for this driver." };
+                driverNotification.IsRead = true;
+                await _db.SaveChangesAsync();
             }
-
-            driverNotification.IsRead = true;
-            await _db.SaveChangesAsync();
 
             var hasPendingDrivers = await _db.Notifications.AnyAsync(x =>
                 x.Title == "New Ride Request" &&

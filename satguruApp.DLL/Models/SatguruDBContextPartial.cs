@@ -1,4 +1,4 @@
-﻿//using Microsoft.AspNet.Identity.EntityFramework;
+//using Microsoft.AspNet.Identity.EntityFramework;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -13,6 +13,8 @@ namespace satguruApp.DLL.Models
 {
     public partial class SatguruDBContext: IdentityDbContext<ApplicationUser, ApplicationRole, string>
     {
+        public virtual DbSet<ChatMessage> ChatMessages { get; set; }
+
         protected void OnModelCreatingPartial(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -39,6 +41,20 @@ namespace satguruApp.DLL.Models
             modelBuilder.Entity<UserLogin>().HasKey(e => new { e.LoginProvider, e.ProviderKey, e.UserId });
             modelBuilder.Entity<Microsoft.AspNetCore.Identity.IdentityUserClaim<string>>().ToTable("AspNetUserClaims");
             modelBuilder.Entity<UserRoles>().ToTable("UserRoles");
+
+            modelBuilder.Entity<ChatMessage>(entity =>
+            {
+                entity.ToTable("ChatMessages");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Id).HasDefaultValueSql("(newid())");
+                entity.Property(e => e.RoomName).HasMaxLength(256).IsRequired();
+                entity.Property(e => e.SenderUserId).HasMaxLength(450).IsRequired();
+                entity.Property(e => e.SenderName).HasMaxLength(256);
+                entity.Property(e => e.ReceiverUserId).HasMaxLength(450);
+                entity.Property(e => e.Message).IsRequired();
+                entity.Property(e => e.CreatedAt).HasColumnType("datetime").HasDefaultValueSql("(getutcdate())");
+                entity.Property(e => e.IsRead).HasDefaultValue(false);
+            });
 
             modelBuilder.Entity<PushDeviceToken>(entity =>
             {

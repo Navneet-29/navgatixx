@@ -118,6 +118,9 @@ namespace satguruApp.Service.ViewModels
         public string? CustomerProfilePic { get; set; }
         public bool AssignedByTransporter { get; set; }
         public string? TransporterName { get; set; }
+        public string? VehicleTypeName { get; set; }
+        public string? BodyTypeName { get; set; }
+        public string? TyreTypeName { get; set; }
         public string? Message { get; set; }
 
         public virtual ICollection<Payment>? Payments { get; set; } = new List<Payment>();
