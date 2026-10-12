@@ -233,7 +233,7 @@ namespace satguruApp.Service.Services
                             notification = new
                             {
                                 channel_id = "navgatix_alerts",
-                                priority = "high",
+                                notification_priority = "PRIORITY_HIGH",
                                 sound = "default",
                                 default_sound = true,
                                 default_vibrate_timings = true

@@ -17,11 +17,13 @@ namespace navgatix.Controllers
     {
         private readonly ITransportService _transportService;
         private readonly SatguruDBContext _db;
+        private readonly IFirebasePushService _firebasePushService;
 
-        public TransportController(ITransportService transportService, SatguruDBContext db)
+        public TransportController(ITransportService transportService, SatguruDBContext db, IFirebasePushService firebasePushService)
         {
             _transportService = transportService;
             _db = db;
+            _firebasePushService = firebasePushService;
         }
 
         [HttpGet("getDashboardSummary")]
@@ -113,6 +115,20 @@ namespace navgatix.Controllers
             _db.Notifications.Add(notification);
             await _db.SaveChangesAsync();
 
+            if (!string.IsNullOrEmpty(transporterUser.Id))
+            {
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { transporterUser.Id }, new PushNotificationPayload
+                    {
+                        Title = $"New Driver Join Request: {driver.Name}",
+                        Body = $"{driver.Name} has requested to join your fleet.",
+                        Data = new Dictionary<string, string> { ["type"] = "join_request" }
+                    });
+                }
+                catch {}
+            }
+
             return Ok(new { message = "Join request sent successfully." });
         }
 
@@ -186,6 +202,20 @@ namespace navgatix.Controllers
             _db.Notifications.Add(notification);
             await _db.SaveChangesAsync();
 
+            if (!string.IsNullOrEmpty(driverUser.Id))
+            {
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { driverUser.Id }, new PushNotificationPayload
+                    {
+                        Title = "Fleet Invitation 🏢",
+                        Body = $"{transporterName} invited you to join their fleet.",
+                        Data = new Dictionary<string, string> { ["type"] = "transporter_invite" }
+                    });
+                }
+                catch {}
+            }
+
             return Ok(new { message = "Invitation sent successfully." });
         }
 
@@ -250,11 +280,22 @@ namespace navgatix.Controllers
                     Id = Guid.NewGuid(),
                     UserId = driver.UserId,
                     Title = "Join Request Accepted",
-                    Message = $"Your join request to {transporter.CompanyName} was accepted.",
+                    Message = $"JOIN_ACCEPTED|{transporter.CompanyName}|Your join request to {transporter.CompanyName} was accepted.",
                     IsRead = false,
                     CreatedAt = DateTime.UtcNow
                 };
                 _db.Notifications.Add(successNotification);
+
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { driver.UserId }, new PushNotificationPayload
+                    {
+                        Title = "Join Request Accepted! 🎉",
+                        Body = $"Welcome! You are now part of {transporter.CompanyName}'s fleet.",
+                        Data = new Dictionary<string, string> { ["type"] = "join_accepted" }
+                    });
+                }
+                catch {}
             }
             else if (type == "INVITE")
             {
@@ -273,11 +314,22 @@ namespace navgatix.Controllers
                     Id = Guid.NewGuid(),
                     UserId = transporter.UserId,
                     Title = "Invitation Accepted",
-                    Message = $"Driver {driver.Name} accepted your invitation.",
+                    Message = $"INVITE_ACCEPTED|{driver.Name}|Driver {driver.Name} accepted your invitation.",
                     IsRead = false,
                     CreatedAt = DateTime.UtcNow
                 };
                 _db.Notifications.Add(successNotification);
+
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { transporter.UserId }, new PushNotificationPayload
+                    {
+                        Title = "Invitation Accepted! 🎉",
+                        Body = $"Driver {driver.Name} accepted your fleet invitation.",
+                        Data = new Dictionary<string, string> { ["type"] = "invite_accepted" }
+                    });
+                }
+                catch {}
             }
 
             notification.IsRead = true;
@@ -310,11 +362,22 @@ namespace navgatix.Controllers
                             Id = Guid.NewGuid(),
                             UserId = driver.UserId,
                             Title = "Join Request Declined",
-                            Message = $"Your join request to {transporterName} was declined.",
+                            Message = $"JOIN_REJECTED|{transporterName}|Your join request to {transporterName} was declined.",
                             IsRead = false,
                             CreatedAt = DateTime.UtcNow
                         };
                         _db.Notifications.Add(rejectNotification);
+
+                        try
+                        {
+                            await _firebasePushService.SendToUsersAsync(new[] { driver.UserId }, new PushNotificationPayload
+                            {
+                                Title = "Join Request Update",
+                                Body = $"Your join request to {transporterName} was declined.",
+                                Data = new Dictionary<string, string> { ["type"] = "join_rejected" }
+                            });
+                        }
+                        catch {}
                     }
                 }
                 else if (type == "INVITE")
@@ -330,11 +393,22 @@ namespace navgatix.Controllers
                             Id = Guid.NewGuid(),
                             UserId = transporter.UserId,
                             Title = "Invitation Declined",
-                            Message = $"{driverName} declined your invitation.",
+                            Message = $"INVITE_REJECTED|{driverName}|{driverName} declined your invitation.",
                             IsRead = false,
                             CreatedAt = DateTime.UtcNow
                         };
                         _db.Notifications.Add(rejectNotification);
+
+                        try
+                        {
+                            await _firebasePushService.SendToUsersAsync(new[] { transporter.UserId }, new PushNotificationPayload
+                            {
+                                Title = "Invitation Update",
+                                Body = $"{driverName} declined your fleet invitation.",
+                                Data = new Dictionary<string, string> { ["type"] = "invite_rejected" }
+                            });
+                        }
+                        catch {}
                     }
                 }
             }
@@ -395,6 +469,20 @@ namespace navgatix.Controllers
             };
             _db.Notifications.Add(releaseNotification);
 
+            if (!string.IsNullOrEmpty(driver.UserId))
+            {
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { driver.UserId }, new PushNotificationPayload
+                    {
+                        Title = "Released from Fleet",
+                        Body = $"You have been released from {transporterName}'s fleet and are now working independently.",
+                        Data = new Dictionary<string, string> { ["type"] = "vehicle_unassign" }
+                    });
+                }
+                catch {}
+            }
+
             notification.IsRead = true;
             _db.Notifications.Update(notification);
             await _db.SaveChangesAsync();
@@ -411,8 +499,9 @@ namespace navgatix.Controllers
             var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
             if (transporter == null) return NotFound("Transporter profile not found.");
 
-            var driverGuid = Guid.Parse(driverId);
-            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverGuid && d.TransporterId == transporter.Id);
+            var driverGuid = Guid.TryParse(driverId, out var parsedGuid) ? parsedGuid : Guid.Empty;
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => (d.Id == driverGuid || d.UserId == driverId) && d.TransporterId == transporter.Id);
+            if (driver == null) driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverGuid || d.UserId == driverId);
             if (driver == null) return NotFound("Driver not found in your fleet.");
 
             driver.TransporterId = null;
@@ -420,7 +509,7 @@ namespace navgatix.Controllers
 
             // Cancel any active bookings and unassign all linked vehicles
             var standingBookings = await _db.Bookings
-                .Where(b => b.DriverId == driverGuid 
+                .Where(b => b.DriverId == driver.Id 
                             && b.VehicleId.HasValue 
                             && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
                             && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
@@ -447,6 +536,21 @@ namespace navgatix.Controllers
                 CreatedAt = DateTime.UtcNow
             };
             _db.Notifications.Add(notification);
+
+            if (!string.IsNullOrEmpty(driver.UserId))
+            {
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { driver.UserId }, new PushNotificationPayload
+                    {
+                        Title = "Removed from Fleet",
+                        Body = $"{transporter.CompanyName ?? "Your transporter"} has removed you from their fleet.",
+                        Data = new Dictionary<string, string> { ["type"] = "vehicle_unassign" }
+                    });
+                }
+                catch {}
+            }
+
             await _db.SaveChangesAsync();
 
             return Ok(new { message = "Driver removed and vehicle unassigned successfully." });
@@ -461,13 +565,14 @@ namespace navgatix.Controllers
             var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.UserId == transporterUserId);
             if (transporter == null) return NotFound("Transporter profile not found.");
 
-            var driverGuid = Guid.Parse(driverId);
-            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverGuid && d.TransporterId == transporter.Id);
-            if (driver == null) return NotFound("Driver not found in your fleet.");
+            var driverGuid = Guid.TryParse(driverId, out var parsedGuid) ? parsedGuid : Guid.Empty;
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => (d.Id == driverGuid || d.UserId == driverId) && (d.TransporterId == transporter.Id || d.TransporterId == null));
+            if (driver == null) driver = await _db.Drivers.FirstOrDefaultAsync(d => d.Id == driverGuid || d.UserId == driverId);
+            if (driver == null) return NotFound("Driver not found.");
 
             // Cancel all active standing or assigned bookings for this driver
             var activeAssignments = await _db.Bookings
-                .Where(b => b.DriverId == driverGuid 
+                .Where(b => b.DriverId == driver.Id 
                             && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
                             && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
                 .ToListAsync();
@@ -498,6 +603,17 @@ namespace navgatix.Controllers
                     CreatedAt = DateTime.UtcNow
                 };
                 _db.Notifications.Add(notification);
+
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { driver.UserId }, new PushNotificationPayload
+                    {
+                        Title = "Vehicle Unassigned",
+                        Body = "Vehicle assignment has been removed by your transporter.",
+                        Data = new Dictionary<string, string> { ["type"] = "vehicle_unassign" }
+                    });
+                }
+                catch {}
             }
 
             await _db.SaveChangesAsync();
@@ -517,17 +633,41 @@ namespace navgatix.Controllers
 
             var relationshipNotifications = notifications.Where(n =>
                 n.Message.StartsWith("JOIN|") ||
+                n.Message.StartsWith("JOIN_ACCEPTED|") ||
+                n.Message.StartsWith("JOIN_REJECTED|") ||
                 n.Message.StartsWith("INVITE|") ||
+                n.Message.StartsWith("INVITE_ACCEPTED|") ||
+                n.Message.StartsWith("INVITE_REJECTED|") ||
                 n.Message.StartsWith("LEAVE|") ||
                 n.Message.StartsWith("SOS|") ||
                 n.Message.StartsWith("DRIVER_ACCEPT_ORDER|") ||
                 n.Message.StartsWith("VEHICLE_ASSIGN|") ||
+                n.Message.StartsWith("VEHICLE_UNASSIGN|") ||
+                n.Message.StartsWith("ASSIGN_SHIPMENT|") ||
                 n.Message.StartsWith("CHAT_MESSAGE|") ||
                 n.Message.StartsWith("CHAT_MESSAGE_DIRECT|") ||
                 n.Message.StartsWith("RIDE_CANCELLED|")
             ).ToList();
 
             return Ok(relationshipNotifications);
+        }
+
+        [HttpPost("clearAllNotifications")]
+        public async Task<IActionResult> ClearAllNotifications([FromQuery] string userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return BadRequest("UserId is required.");
+
+            var notifications = await _db.Notifications
+                .Where(n => n.UserId == userId && n.IsRead != true)
+                .ToListAsync();
+
+            foreach (var n in notifications)
+            {
+                n.IsRead = true;
+            }
+
+            await _db.SaveChangesAsync();
+            return Ok(new { message = "All notifications cleared.", count = notifications.Count });
         }
 
         [HttpGet("getDriverActiveTransporter")]
@@ -634,6 +774,20 @@ namespace navgatix.Controllers
                 .ToListAsync();
 
             return Ok(notifications);
+        }
+
+        [HttpPost("cancelOutboundInvitation")]
+        public async Task<IActionResult> CancelOutboundInvitation([FromQuery] Guid notificationId)
+        {
+            var notification = await _db.Notifications.FirstOrDefaultAsync(n => n.Id == notificationId);
+            if (notification == null) return NotFound("Invitation notification not found.");
+
+            // Mark invitation as resolved/read so it disappears from both driver's incoming invites and transporter's outbound list
+            notification.IsRead = true;
+            _db.Notifications.Update(notification);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Invitation cancelled successfully." });
         }
 
         [HttpGet("getDriverOutboundJoinRequests")]
@@ -746,6 +900,67 @@ namespace navgatix.Controllers
                 return BadRequest("Driver does not have a user account mapped.");
             }
 
+            // Strictly prevent assigning route if driver is currently Offline (Option B)
+            var isDriverOnline = await _db.UserInformations
+                .Where(u => u.UserId != null && u.UserId.ToLower() == driver.UserId.ToLower())
+                .Select(u => u.IsOnline)
+                .FirstOrDefaultAsync();
+
+            if (isDriverOnline != true)
+            {
+                return BadRequest($"Cannot assign shipment: Driver '{driver.Name}' is currently Offline. Ask the driver to turn their online toggle ON first.");
+            }
+
+            // Strictly prevent assigning shipment if driver is already on an active ride
+            Guid.TryParse(driver.UserId, out var parsedDriverUserGuid);
+            var isDriverOnRide = await _db.Bookings.AnyAsync(b => 
+                (b.DriverId == driver.Id || (parsedDriverUserGuid != Guid.Empty && b.DriverId == parsedDriverUserGuid))
+                && b.CustomerId != null 
+                && b.IsDeleted != true
+                && (b.CT_BookingStatus == satguruApp.Service.ViewModels.RideStatus.DriverAssigned 
+                    || b.CT_BookingStatus == satguruApp.Service.ViewModels.RideStatus.DriverArriving 
+                    || b.CT_BookingStatus == satguruApp.Service.ViewModels.RideStatus.RideStarted));
+
+            if (isDriverOnRide)
+            {
+                return BadRequest($"Cannot assign shipment: Driver '{driver.Name}' is already on an active ride. Please wait for the driver to complete the current ride or choose a different driver.");
+            }
+
+            // Strictly validate vehicle category matching (2_wheeler, 3_wheeler, truck)
+            if (booking.CT_VehicleType.HasValue && booking.CT_VehicleType.Value != 0)
+            {
+                var driverVehicleBooking = await _db.Bookings
+                    .Where(b => b.DriverId == driver.Id 
+                                && b.VehicleId.HasValue 
+                                && b.CustomerId == null 
+                                && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.RideCompleted 
+                                && b.CT_BookingStatus != satguruApp.Service.ViewModels.RideStatus.Cancelled)
+                    .OrderByDescending(b => b.CreatedAt)
+                    .FirstOrDefaultAsync();
+
+                satguruApp.DLL.Models.Vehicle? assignedVeh = null;
+                if (driverVehicleBooking != null && driverVehicleBooking.VehicleId.HasValue)
+                {
+                    assignedVeh = await _db.Vehicles.FirstOrDefaultAsync(v => v.Id == driverVehicleBooking.VehicleId.Value && v.IsDeleted != true);
+                }
+
+                if (assignedVeh != null && assignedVeh.CT_VehicleType.HasValue)
+                {
+                    var reqTypeObj = await _db.CommonTypes.FirstOrDefaultAsync(c => c.Id == booking.CT_VehicleType.Value);
+                    var driverTypeObj = await _db.CommonTypes.FirstOrDefaultAsync(c => c.Id == assignedVeh.CT_VehicleType.Value);
+
+                    string reqCat = GetVehicleCategory(booking.CT_VehicleType.Value, reqTypeObj?.Name);
+                    string driverCat = GetVehicleCategory(assignedVeh.CT_VehicleType.Value, driverTypeObj?.Name);
+
+                    if (reqCat != driverCat)
+                    {
+                        string reqDisplay = reqTypeObj?.Name ?? (reqCat == "2_wheeler" ? "2-Wheeler" : reqCat == "3_wheeler" ? "3-Wheeler" : "Truck");
+                        string driverDisplay = driverTypeObj?.Name ?? (driverCat == "2_wheeler" ? "2-Wheeler" : driverCat == "3_wheeler" ? "3-Wheeler" : "Truck");
+                        return BadRequest($"Vehicle Mismatch: This ride requires a {reqDisplay}, but driver '{driver.Name}' is assigned a {driverDisplay} ({assignedVeh.VehicleNumber}). Please change the driver or vehicle.");
+                    }
+                }
+            }
+
             var assignMessage = $"ASSIGN_SHIPMENT|{bookingId}|{transporter.Id}|{transporter.CompanyName}";
             var notification = new satguruApp.DLL.Models.Notification
             {
@@ -758,6 +973,17 @@ namespace navgatix.Controllers
 
             _db.Notifications.Add(notification);
 
+            try
+            {
+                await _firebasePushService.SendToUsersAsync(new[] { driver.UserId }, new PushNotificationPayload
+                {
+                    Title = "New Shipment Assignment",
+                    Body = $"{transporter.CompanyName ?? "Your transporter"} assigned you shipment #{bookingId} ({booking.PickupAddress} to {booking.DropAddress}).",
+                    Data = new Dictionary<string, string> { ["type"] = "shipment_assign", ["bookingId"] = bookingId.ToString() }
+                });
+            }
+            catch {}
+
             if (!string.IsNullOrEmpty(booking.CustomerId))
             {
                 var cNotif = new satguruApp.DLL.Models.Notification
@@ -769,6 +995,17 @@ namespace navgatix.Controllers
                     Title = "Driver Assigned to Your Order"
                 };
                 _db.Notifications.Add(cNotif);
+
+                try
+                {
+                    await _firebasePushService.SendToUsersAsync(new[] { booking.CustomerId }, new PushNotificationPayload
+                    {
+                        Title = "Driver Assigned to Your Order",
+                        Body = $"{driver.Name} has been assigned to your order #{bookingId}.",
+                        Data = new Dictionary<string, string> { ["type"] = "driver_assigned", ["bookingId"] = bookingId.ToString() }
+                    });
+                }
+                catch {}
             }
 
             await _db.SaveChangesAsync();
@@ -799,16 +1036,28 @@ namespace navgatix.Controllers
                         return BadRequest("Shipment already assigned.");
                     }
 
-                    var claimPrefix = $"CLAIM|{bookingId}|";
-                    var claimNotif = await _db.Notifications.FirstOrDefaultAsync(n => n.Message.StartsWith(claimPrefix) && n.IsRead != true);
-                    if (claimNotif != null)
+                    if (driver.TransporterId.HasValue)
                     {
-                        var parts = claimNotif.Message.Split('|');
-                        var transporterId = long.Parse(parts[2]);
+                        var driverTransporterId = driver.TransporterId.Value;
+                        var claimPrefix = $"CLAIM|{bookingId}|";
+                        // Check if another transporter claimed this shipment
+                        var otherTransporterClaim = await _db.Notifications
+                            .AnyAsync(n => n.Message.StartsWith(claimPrefix) 
+                                           && !n.Message.StartsWith($"CLAIM|{bookingId}|{driverTransporterId}")
+                                           && n.Title == "Shipment Claimed"
+                                           && n.IsRead != true);
 
-                        if (driver.TransporterId.HasValue && driver.TransporterId.Value != transporterId)
+                        // If claimed by another transporter and not assigned to this driver's transporter fleet, block
+                        if (otherTransporterClaim)
                         {
-                            return BadRequest("Shipment claimed by another transporter and not assigned to your fleet.");
+                            var ownTransporterClaim = await _db.Notifications
+                                .AnyAsync(n => n.Message.StartsWith($"CLAIM|{bookingId}|{driverTransporterId}") 
+                                               || n.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|{driverTransporterId}"));
+
+                            if (!ownTransporterClaim)
+                            {
+                                return BadRequest("Shipment claimed by another transporter and not assigned to your fleet.");
+                            }
                         }
                     }
 
@@ -862,6 +1111,17 @@ namespace navgatix.Controllers
                                 Title = "Driver Accepted Order"
                             };
                             _db.Notifications.Add(tNotif);
+
+                            try
+                            {
+                                await _firebasePushService.SendToUsersAsync(new[] { transporter.UserId }, new PushNotificationPayload
+                                {
+                                    Title = "Driver Accepted Order",
+                                    Body = $"{driver.Name} accepted shipment #{booking.Id} ({booking.PickupAddress} to {booking.DropAddress}).",
+                                    Data = new Dictionary<string, string> { ["type"] = "driver_accept_order", ["bookingId"] = booking.Id.ToString() }
+                                });
+                            }
+                            catch {}
                         }
                     }
 
@@ -878,6 +1138,17 @@ namespace navgatix.Controllers
                             Title = "Driver Assigned to Your Order"
                         };
                         _db.Notifications.Add(cNotif);
+
+                        try
+                        {
+                            await _firebasePushService.SendToUsersAsync(new[] { booking.CustomerId }, new PushNotificationPayload
+                            {
+                                Title = "Driver Assigned to Your Order",
+                                Body = $"{driver.Name} is confirmed for order #{booking.Id}.",
+                                Data = new Dictionary<string, string> { ["type"] = "driver_assigned", ["bookingId"] = booking.Id.ToString() }
+                            });
+                        }
+                        catch {}
                     }
 
                     await _db.SaveChangesAsync();
@@ -891,6 +1162,70 @@ namespace navgatix.Controllers
                     return StatusCode(500, "Error locking the shipment assignment.");
                 }
             }
+        }
+
+        [HttpPost("rejectShipmentAsDriver")]
+        public async Task<IActionResult> RejectShipmentAsDriver([FromQuery] string driverUserId, [FromQuery] long bookingId)
+        {
+            if (string.IsNullOrEmpty(driverUserId)) return BadRequest("driverUserId is required.");
+
+            var driver = await _db.Drivers.FirstOrDefaultAsync(d => d.UserId == driverUserId && d.IsDeleted != true);
+            if (driver == null) return NotFound("Driver not found.");
+
+            var booking = await _db.Bookings.FirstOrDefaultAsync(b => b.Id == bookingId && b.IsDeleted != true);
+            if (booking == null) return NotFound("Booking not found.");
+
+            // 1. Mark driver assignment notifications for this booking as read so it disappears from driver's screen
+            var driverNotifs = await _db.Notifications
+                .Where(n => n.UserId == driverUserId
+                            && (n.Title == "New Shipment Assignment" || n.Title == "New Ride Request" || n.Title == "New Order Request Received")
+                            && n.IsRead != true
+                            && n.Message != null
+                            && (n.Message.Contains($"Ride #{bookingId}")
+                                || n.Message.StartsWith($"ASSIGN_SHIPMENT|{bookingId}|")
+                                || n.Message.StartsWith($"NEW_ORDER_REQUEST|{bookingId}|")))
+                .ToListAsync();
+
+            foreach (var n in driverNotifs)
+            {
+                n.IsRead = true;
+                _db.Notifications.Update(n);
+            }
+
+            // 2. Notify Transporter that driver declined the assignment
+            if (driver.TransporterId.HasValue)
+            {
+                var transporter = await _db.TransporterDetails.FirstOrDefaultAsync(t => t.Id == driver.TransporterId.Value);
+                if (transporter != null && !string.IsNullOrEmpty(transporter.UserId))
+                {
+                    var declineMsg = $"DRIVER_DECLINE_ORDER|{booking.Id}|{driver.Name}|{booking.PickupAddress} ➔ {booking.DropAddress}";
+                    var tNotif = new satguruApp.DLL.Models.Notification
+                    {
+                        Id = Guid.NewGuid(),
+                        UserId = transporter.UserId,
+                        Message = declineMsg,
+                        CreatedAt = DateTime.UtcNow,
+                        IsRead = false,
+                        Title = "Driver Declined Assignment"
+                    };
+                    _db.Notifications.Add(tNotif);
+
+                    try
+                    {
+                        await _firebasePushService.SendToUsersAsync(new[] { transporter.UserId }, new PushNotificationPayload
+                        {
+                            Title = "Driver Declined Assignment",
+                            Body = $"{driver.Name} declined assignment for shipment #{booking.Id}. Please assign another driver.",
+                            Data = new Dictionary<string, string> { ["type"] = "driver_decline_order", ["bookingId"] = booking.Id.ToString() }
+                        });
+                    }
+                    catch {}
+                }
+            }
+
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Shipment declined successfully." });
         }
 
         [HttpPost("sendNotification")]
@@ -907,6 +1242,33 @@ namespace navgatix.Controllers
             };
             _db.Notifications.Add(notification);
             await _db.SaveChangesAsync();
+
+            // Send Firebase push notification
+            try
+            {
+                var bodyText = message;
+                var notifType = "general";
+                if (message.StartsWith("VEHICLE_ASSIGN|"))
+                {
+                    var vehicleName = message.Split('|').Length > 1 ? message.Split('|')[1] : "Vehicle";
+                    bodyText = $"Vehicle assigned: {vehicleName}";
+                    notifType = "vehicle_assign";
+                }
+                else if (message.StartsWith("VEHICLE_UNASSIGN|"))
+                {
+                    bodyText = message.Split('|').Length > 1 ? message.Split('|')[1] : "Vehicle unassigned.";
+                    notifType = "vehicle_unassign";
+                }
+
+                await _firebasePushService.SendToUsersAsync(new[] { userId }, new PushNotificationPayload
+                {
+                    Title = title ?? "New Notification",
+                    Body = bodyText,
+                    Data = new Dictionary<string, string> { ["type"] = notifType, ["raw"] = message }
+                });
+            }
+            catch {}
+
             return Ok();
         }
 
@@ -954,6 +1316,59 @@ namespace navgatix.Controllers
 
             await _db.SaveChangesAsync();
             return Ok();
+        }
+
+        [HttpGet("getChatHistory")]
+        public async Task<IActionResult> GetChatHistory([FromQuery] string roomName)
+        {
+            if (string.IsNullOrEmpty(roomName)) return BadRequest("roomName is required.");
+
+            var messages = await _db.ChatMessages
+                .Where(m => m.RoomName == roomName)
+                .OrderBy(m => m.CreatedAt)
+                .Select(m => new {
+                    id = m.Id,
+                    roomName = m.RoomName,
+                    sender = m.SenderName,
+                    senderUserId = m.SenderUserId,
+                    text = m.Message,
+                    time = m.CreatedAt.ToString("o")
+                })
+                .ToListAsync();
+
+            return Ok(messages);
+        }
+
+        [HttpPost("deleteChatMessage")]
+        public async Task<IActionResult> DeleteChatMessage([FromQuery] Guid messageId, [FromQuery] string userId)
+        {
+            var msg = await _db.ChatMessages.FirstOrDefaultAsync(m => m.Id == messageId);
+            if (msg == null) return NotFound("Message not found.");
+
+            // Allow sender to delete/undo
+            if (!string.IsNullOrEmpty(msg.SenderUserId) && !string.IsNullOrEmpty(userId) && !msg.SenderUserId.Equals(userId, StringComparison.OrdinalIgnoreCase))
+            {
+                return Forbid("You can only delete or undo your own message.");
+            }
+
+            _db.ChatMessages.Remove(msg);
+            await _db.SaveChangesAsync();
+
+            return Ok(new { message = "Message deleted successfully." });
+        }
+
+        private static string GetVehicleCategory(int? typeId, string? typeName)
+        {
+            var name = (typeName ?? string.Empty).Trim().ToLowerInvariant();
+            if (name.Contains("2-wheeler") || name.Contains("2 wheeler") || name.Contains("bike") || name.Contains("scooter") || name.Contains("two wheeler"))
+            {
+                return "2_wheeler";
+            }
+            if (name.Contains("3-wheeler") || name.Contains("3 wheeler") || name.Contains("auto") || name.Contains("three wheeler") || name.Contains("rickshaw"))
+            {
+                return "3_wheeler";
+            }
+            return "truck";
         }
     }
 }

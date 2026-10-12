@@ -9,6 +9,7 @@ import { useAuth } from '../../hooks/useAuth';
 import DriverWallet from '../../components/DriverWallet';
 import ProfilePage from '../ProfilePage';
 import DriverRouteMap from '../../components/DriverRouteMap';
+import { playAlertChime, triggerNotificationAlert } from '../../utils/alertSound';
 
 type RideStatus = 'request_for_ride' | 'driver_assigned' | 'driver_arriving' | 'ride_started' | 'ride_completed' | 'cancelled';
 
@@ -64,6 +65,7 @@ const DriverDashboard = () => {
     const [chatBookingId, setChatBookingId] = useState<number | null>(null);
     const [directChatRoomName, setDirectChatRoomName] = useState<string | null>(null);
     const lastSeenNotifIdsRef = useRef<Set<string>>(new Set());
+    const hasInitialNotifCheckRef = useRef<boolean>(false);
     const [chatToast, setChatToast] = useState<{
         id: string;
         bookingId?: number;
@@ -132,11 +134,8 @@ const DriverDashboard = () => {
     };
 
     const playNotificationAlertSound = () => {
-        try {
-            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-            audio.volume = 0.8;
-            audio.play().catch(() => {});
-        } catch (e) {}
+        playAlertChime();
+        triggerNotificationAlert();
     };
 
     const driverUserId = user?.userId || user?.UserId || user?.id || user?.Id || localStorage.getItem('userId') || '';
@@ -694,6 +693,23 @@ const DriverDashboard = () => {
                                 }
                             });
                         } catch (e) {}
+                    } else if (n.message && (n.message.startsWith('JOIN_ACCEPTED|') || n.message.startsWith('JOIN_REJECTED|'))) {
+                        const isAccepted = n.message.startsWith('JOIN_ACCEPTED|');
+                        const parts = n.message.split('|');
+                        const companyName = parts[1] || 'Transporter';
+                        setChatToast({
+                            id: n.id,
+                            senderName: isAccepted ? '🎉 Join Request Accepted!' : '❌ Join Request Declined',
+                            messageText: isAccepted ? `You have been added to ${companyName}'s fleet!` : `Your request to join ${companyName} was declined.`
+                        });
+                    } else if (n.message && n.message.startsWith('INVITE|')) {
+                        const parts = n.message.split('|');
+                        const transporterName = parts[3] || 'Transporter';
+                        setChatToast({
+                            id: n.id,
+                            senderName: '🏢 New Fleet Invitation',
+                            messageText: `${transporterName} has invited you to join their fleet!`
+                        });
                     } else if (n.message && n.message.startsWith('RIDE_CANCELLED|')) {
                         const parts = n.message.split('|');
                         const info = parts[2] || parts[1] || 'Ride cancelled';
@@ -707,6 +723,7 @@ const DriverDashboard = () => {
                 }
             });
 
+            hasInitialNotifCheckRef.current = true;
             lastSeenNotifIdsRef.current = new Set(newNotifications.map((n: any) => n.id));
             setRelationshipRequests(newNotifications);
             setOutboundJoinRequests(Array.isArray(outboundRes.data) ? outboundRes.data : []);
@@ -1183,7 +1200,7 @@ const DriverDashboard = () => {
                             </header>
 
                             {/* Prominent Inbound Transporter Invitations Banner at Top */}
-                            {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|') && !req.message.startsWith('VEHICLE_ASSIGN|') && !req.message.startsWith('VEHICLE_UNASSIGN|')).map(req => {
+                            {relationshipRequests.filter(req => req.message && req.message.startsWith('INVITE|')).map(req => {
                                 const parts = req.message.split('|');
                                 const companyName = parts[3] || 'Transporter';
                                 const email = parts[2] || '';
@@ -1214,6 +1231,36 @@ const DriverDashboard = () => {
                                                 Accept Invitation
                                             </button>
                                         </div>
+                                    </div>
+                                );
+                            })}
+
+                            {/* Banner: Join Request Accepted */}
+                            {relationshipRequests.filter(n => n.message && n.message.startsWith('JOIN_ACCEPTED|')).map(notif => {
+                                const parts = notif.message.split('|');
+                                const companyName = parts[1] || 'Transporter';
+                                return (
+                                    <div key={notif.id} className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white rounded-2xl p-5 mb-6 relative z-10 shadow-xl border border-emerald-400/40 flex items-center justify-between gap-4 animate-in slide-in-from-top-4 duration-300">
+                                        <div className="space-y-1">
+                                            <span className="text-[10px] uppercase font-black tracking-widest text-emerald-200 bg-white/15 px-2.5 py-0.5 rounded-full border border-white/20">
+                                                Request Accepted
+                                            </span>
+                                            <h4 className="font-extrabold text-base flex items-center gap-2 mt-1">
+                                                🎉 Welcome to {companyName}'s Fleet!
+                                            </h4>
+                                            <p className="text-xs text-emerald-100 font-medium">
+                                                Your request to work under {companyName} has been approved. You are now linked to this transporter.
+                                            </p>
+                                        </div>
+                                        <button 
+                                            onClick={async () => {
+                                                await apiClient.post(`/Transport/rejectRequest?notificationId=${notif.id}`);
+                                                loadRelationshipDetails();
+                                            }}
+                                            className="bg-white text-emerald-800 hover:bg-emerald-50 font-black px-5 py-2.5 rounded-xl text-xs shadow-md transition-colors cursor-pointer shrink-0"
+                                        >
+                                            Acknowledge
+                                        </button>
                                     </div>
                                 );
                             })}
@@ -1265,6 +1312,7 @@ const DriverDashboard = () => {
                                 </div>
                             )}
                             
+                            {/* Banner: Vehicle Assigned */}
                             {relationshipRequests.some(n => n.message && n.message.startsWith('VEHICLE_ASSIGN|')) && (
                                 <div className="bg-gradient-to-r from-indigo-950 to-indigo-900 text-white rounded-2xl p-5 mb-8 relative z-10 shadow-lg border border-indigo-700/50 flex items-center justify-between animate-in slide-in-from-top-4 duration-300">
                                     <div className="space-y-1">
@@ -1281,7 +1329,33 @@ const DriverDashboard = () => {
                                                  loadRelationshipDetails();
                                             }
                                         }}
-                                        className="bg-white/20 hover:bg-white/30 border border-white/20 text-white font-bold px-4 py-2 rounded-xl text-xs transition-colors cursor-pointer"
+                                        className="bg-white/20 hover:bg-white/30 border border-white/20 text-white font-bold px-4 py-2 rounded-xl text-xs transition-colors cursor-pointer shrink-0"
+                                    >
+                                        Acknowledge
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Banner: Vehicle Unassigned or Removed from Fleet */}
+                            {relationshipRequests.some(n => n.message && n.message.startsWith('VEHICLE_UNASSIGN|')) && (
+                                <div className="bg-gradient-to-r from-amber-700 to-rose-800 text-white rounded-2xl p-5 mb-6 relative z-10 shadow-xl border border-amber-500/50 flex items-center justify-between gap-4 animate-in slide-in-from-top-4 duration-300">
+                                    <div className="space-y-1">
+                                        <h4 className="font-extrabold text-base flex items-center gap-2">
+                                            <span>⚠️ Vehicle Unassigned / Fleet Update</span>
+                                        </h4>
+                                        <p className="text-sm text-amber-100 font-medium">
+                                            {relationshipRequests.find(n => n.message && n.message.startsWith('VEHICLE_UNASSIGN|'))?.message.split('|')[1] || 'Vehicle assignment has been removed by your transporter.'}
+                                        </p>
+                                    </div>
+                                    <button 
+                                        onClick={async () => {
+                                            const notif = relationshipRequests.find(n => n.message && n.message.startsWith('VEHICLE_UNASSIGN|'));
+                                            if (notif) {
+                                                 await apiClient.post(`/Transport/rejectRequest?notificationId=${notif.id}`);
+                                                 loadRelationshipDetails();
+                                            }
+                                        }}
+                                        className="bg-white text-rose-900 hover:bg-amber-50 font-black px-5 py-2.5 rounded-xl text-xs shadow-md transition-colors cursor-pointer shrink-0"
                                     >
                                         Acknowledge
                                     </button>
@@ -1659,11 +1733,11 @@ const DriverDashboard = () => {
                                 </div>
 
                                 {/* Inbound Invitations from Transporters */}
-                                {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|')).length > 0 && (
+                                {relationshipRequests.filter(req => req.message && req.message.startsWith('INVITE|')).length > 0 && (
                                     <div className="border-t border-slate-100 pt-4 space-y-3">
                                         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Inbound Invitations</p>
                                         <div className="space-y-2">
-                                            {relationshipRequests.filter(req => req.message && !req.message.startsWith('CHAT_MESSAGE|') && !req.message.startsWith('CHAT_MESSAGE_DIRECT|')).map(req => {
+                                            {relationshipRequests.filter(req => req.message && req.message.startsWith('INVITE|')).map(req => {
                                                 const parts = req.message.split('|');
                                                 const companyName = parts[3] || 'Transporter';
                                                 const email = parts[2] || '';

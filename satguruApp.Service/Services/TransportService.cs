@@ -546,6 +546,7 @@ namespace satguruApp.Service.Services
                     VehicleNumber = vehicle.VehicleNumber,
                     VehicleName = string.IsNullOrWhiteSpace(vehicle.VehicleName) ? vehicle.VehicleNumber : vehicle.VehicleName,
                     VehicleTypeName = vehicleTypeName,
+                    CT_VehicleType = vehicle.CT_VehicleType,
                     DriverId = driver?.Id,
                     DriverName = driver?.Name ?? "Unassigned",
                     DriverPhone = driver?.Phone,

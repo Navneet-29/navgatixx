@@ -41,6 +41,7 @@ import ChatPanel from '../../components/ChatPanel';
 import { useAuth } from '../../hooks/useAuth';
 import { disablePushNotifications } from '../../lib/firebaseMessaging';
 import { logoutFirebaseAuth } from '../../lib/firebaseAuth';
+import { playAlertChime, triggerNotificationAlert } from '../../utils/alertSound';
 
 type TransporterSummary = {
     totalFleet: number;
@@ -119,6 +120,7 @@ const TransporterDashboard = () => {
     const [chatBookingId, setChatBookingId] = useState<number | null>(null);
     const [directChatRoomName, setDirectChatRoomName] = useState<string | null>(null);
     const lastSeenNotifIdsRef = useRef<Set<string>>(new Set());
+    const hasInitialNotifCheckRef = useRef<boolean>(false);
     const [chatToast, setChatToast] = useState<{
         id: string;
         bookingId?: number;
@@ -454,14 +456,11 @@ const TransporterDashboard = () => {
             
             const newNotifications = Array.isArray(inboundRes.data) ? inboundRes.data : [];
             newNotifications.forEach((n: any) => {
-                if (!lastSeenNotifIdsRef.current.has(n.id) && lastSeenNotifIdsRef.current.size > 0) {
-                    if (n.message && (n.message.startsWith('CHAT_MESSAGE|') || n.message.startsWith('CHAT_MESSAGE_DIRECT|'))) {
-                        try {
-                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                            audio.volume = 0.6;
-                            audio.play().catch(() => {});
-                        } catch (e) {}
+                if (!lastSeenNotifIdsRef.current.has(n.id) && (hasInitialNotifCheckRef.current || newNotifications.length > 0)) {
+                    playAlertChime();
+                    triggerNotificationAlert();
 
+                    if (n.message && (n.message.startsWith('CHAT_MESSAGE|') || n.message.startsWith('CHAT_MESSAGE_DIRECT|'))) {
                         const parts = n.message.split('|');
                         const senderAndText = parts[2] || '';
                         const msgParts = senderAndText.split(':');
@@ -485,14 +484,44 @@ const TransporterDashboard = () => {
                                 messageText
                             });
                         }
+                    } else if (n.message && n.message.startsWith('JOIN|')) {
+                        const parts = n.message.split('|');
+                        const driverName = parts[3] || 'A driver';
+                        setChatToast({
+                            id: n.id,
+                            senderName: '🤝 New Join Request',
+                            messageText: `${driverName} requested to join your fleet.`
+                        });
+                        fetchFleetLists();
+                    } else if (n.message && n.message.startsWith('LEAVE|')) {
+                        const parts = n.message.split('|');
+                        const driverName = parts[3] || 'A driver';
+                        setChatToast({
+                            id: n.id,
+                            senderName: '⚠️ Leave Request',
+                            messageText: `${driverName} requested to leave your fleet.`
+                        });
+                        fetchFleetLists();
+                    } else if (n.message && n.message.startsWith('INVITE_ACCEPTED|')) {
+                        const parts = n.message.split('|');
+                        const driverName = parts[1] || 'Driver';
+                        setChatToast({
+                            id: n.id,
+                            senderName: '🎉 Invitation Accepted',
+                            messageText: `${driverName} accepted your fleet invitation.`
+                        });
+                        fetchFleetLists();
+                        fetchDashboardData();
+                    } else if (n.message && n.message.startsWith('INVITE_REJECTED|')) {
+                        const parts = n.message.split('|');
+                        const driverName = parts[1] || 'Driver';
+                        setChatToast({
+                            id: n.id,
+                            senderName: '❌ Invitation Declined',
+                            messageText: `${driverName} declined your fleet invitation.`
+                        });
                     } else if (n.message && n.message.startsWith('DRIVER_ACCEPT_ORDER|')) {
                         // Driver accepted assignment / order
-                        try {
-                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                            audio.volume = 0.7;
-                            audio.play().catch(() => {});
-                        } catch (e) {}
-
                         const parts = n.message.split('|');
                         const bookingId = Number(parts[1]);
                         const driverName = parts[2] || 'Your Driver';
@@ -518,12 +547,6 @@ const TransporterDashboard = () => {
                         fetchFleetLists();
                     } else if (n.message && n.message.startsWith('DISPUTE_ALERT|')) {
                         // Customer complaint / ride issue reported against fleet driver
-                        try {
-                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                            audio.volume = 0.7;
-                            audio.play().catch(() => {});
-                        } catch (e) {}
-
                         const parts = n.message.split('|');
                         const rideId = parts[1] || 'Ride';
                         const driverInfo = parts[2] || '';
@@ -540,12 +563,6 @@ const TransporterDashboard = () => {
                         });
                     } else if (n.message && n.message.startsWith('RIDE_CANCELLED|')) {
                         // Ride cancelled notification
-                        try {
-                            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
-                            audio.volume = 0.8;
-                            audio.play().catch(() => {});
-                        } catch (e) {}
-
                         const parts = n.message.split('|');
                         const bookingId = Number(parts[1]);
                         const info = parts[2] || parts[1] || 'Ride cancelled';
@@ -566,6 +583,7 @@ const TransporterDashboard = () => {
                 }
             });
 
+            hasInitialNotifCheckRef.current = true;
             lastSeenNotifIdsRef.current = new Set(newNotifications.map((n: any) => n.id));
             setRelationshipRequests(newNotifications);
             setOutboundInvitations(Array.isArray(outboundRes.data) ? outboundRes.data : []);
